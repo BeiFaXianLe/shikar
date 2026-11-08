@@ -18,6 +18,7 @@
 路由：
 
 * ``GET /api/health``                                  → ``{"status": "ok"}``
+* ``GET /api/overview``                                → 首页总览聚合
 * ``GET /api/xiaoqu?city=&district=``                  → 小区列表
 * ``GET /api/xiaoqu/{id}``                             → 单条小区 / 404
 * ``GET /api/xiaoqu/{id}/series?start_week=&end_week=``→ 周度指标（week 升序）
@@ -35,7 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import storage
+from . import overview, storage
 
 __all__ = ["create_server", "make_handler"]
 
@@ -87,6 +88,10 @@ def _route(
     # /api/health
     if path == "/api/health":
         return 200, {"status": "ok"}
+
+    # /api/overview  （首页总览聚合）
+    if path == "/api/overview":
+        return 200, overview.compute_overview(conn)
 
     # /api/xiaoqu  （列表 + 可选过滤）
     if path == "/api/xiaoqu":
