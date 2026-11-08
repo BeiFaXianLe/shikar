@@ -25,11 +25,19 @@
 * ``GET /api/xiaoqu/{id}/signals``                     → 信号事件列表
 * 未知路径                                             → 404
 * 非 GET                                               → 405
+
+静态文件服务（可选）：
+
+当 ``create_server`` 传入 ``web_root`` 时，非 ``/api/`` 前缀的 GET 请求将作为
+静态文件处理：``/`` 映射到 ``index.html``，按扩展名给出 ``Content-Type``，并做
+**路径穿越防护**（规范化后必须仍位于 ``web_root`` 内，越界返回 404）。
+``web_root`` 为 ``None`` 时非 ``/api`` 路径仍走原有 404 JSON 逻辑（保持旧测试）。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +47,47 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import overview, storage
 
 __all__ = ["create_server", "make_handler"]
+
+#: 静态文件扩展名到 ``Content-Type`` 的映射；未命中时用 ``application/octet-stream``。
+_CONTENT_TYPES: dict[str, str] = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css",
+    ".js": "application/javascript",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+}
+
+
+def _content_type(path: str) -> str:
+    """按文件扩展名返回静态文件 ``Content-Type``。
+
+    :param path: 静态文件路径（或 URL 路径）。
+    :return: 命中的 MIME 类型；未知扩展名返回 ``application/octet-stream``。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    return _CONTENT_TYPES.get(ext, "application/octet-stream")
+
+
+def _resolve_static(web_root: str, url_path: str) -> Optional[str]:
+    """把 URL 路径安全地解析为 ``web_root`` 内的绝对文件路径。
+
+    做路径穿越防护：将 URL 路径解码、拼接后 ``realpath`` 规范化，若结果不在
+    ``web_root`` 的真实路径之内则返回 ``None``（由调用方返回 404）。
+
+    :param web_root: 静态根目录。
+    :param url_path: 已 ``urlsplit`` 出的 URL 路径（如 ``/``、``/style.css``）。
+    :return: 位于 ``web_root`` 内的绝对路径；越界或非法时返回 ``None``。
+    """
+    rel = unquote(url_path).lstrip("/")
+    if rel == "" or url_path.endswith("/"):
+        rel = (rel + "index.html") if rel else "index.html"
+    root_abs = os.path.realpath(web_root)
+    candidate = os.path.realpath(os.path.join(root_abs, rel))
+    # 规范化后必须仍位于 web_root 内（含 root 自身边界，避免前缀误判）。
+    if candidate != root_abs and not candidate.startswith(root_abs + os.sep):
+        return None
+    return candidate
 
 
 # --------------------------------------------------------------------------- #
@@ -130,8 +179,10 @@ def _route(
     return 404, {"error": f"未知路径: {path}"}
 
 
-def make_handler(conn: sqlite3.Connection) -> type[BaseHTTPRequestHandler]:
-    """构造绑定到给定连接的 ``BaseHTTPRequestHandler`` 子类。
+def make_handler(
+    conn: sqlite3.Connection, web_root: Optional[str] = None
+) -> type[BaseHTTPRequestHandler]:
+    """构造绑定到给定连接（及可选静态根目录）的处理器子类。
 
     以工厂方式而非全局状态把连接交给处理器，使多个 ``create_server`` 实例
     互不干扰。
@@ -141,6 +192,7 @@ def make_handler(conn: sqlite3.Connection) -> type[BaseHTTPRequestHandler]:
     一连接上交叉执行，这里另加一把进程内的互斥锁串行化所有数据库访问。
 
     :param conn: 已打开的 SQLite 连接（须为线程安全连接）。
+    :param web_root: 可选静态文件根目录；``None`` 时不提供静态服务。
     :return: 可作为 ``RequestHandlerClass`` 使用的处理器类。
     """
     db_lock = threading.Lock()
@@ -166,8 +218,48 @@ def make_handler(conn: sqlite3.Connection) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_bytes(
+            self, status: int, content_type: str, body: bytes
+        ) -> None:
+            """写入一条完整的任意类型响应。
+
+            :param status: HTTP 状态码。
+            :param content_type: 响应 ``Content-Type``。
+            :param body: 原始响应体字节。
+            """
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve_static(self, url_path: str) -> None:
+            """按 ``web_root`` 提供静态文件；越界或不存在时返回 404 JSON。
+
+            :param url_path: 已 ``urlsplit`` 出的 URL 路径。
+            """
+            if web_root is None:
+                self._send_json(404, {"error": f"未知路径: {url_path}"})
+                return
+            target = _resolve_static(web_root, url_path)
+            if target is None or not os.path.isfile(target):
+                self._send_json(404, {"error": f"文件不存在: {url_path}"})
+                return
+            try:
+                with open(target, "rb") as fh:
+                    body = fh.read()
+            except OSError as exc:
+                self._send_json(404, {"error": f"文件不存在: {url_path} ({exc})"})
+                return
+            # 以实际的已解析文件路径（而非 URL）决定扩展名/MIME。
+            self._send_bytes(200, _content_type(target), body)
+
         def do_GET(self) -> None:  # noqa: N802  （http.server 约定方法名）
-            """处理 GET：路由后统一输出 JSON。"""
+            """处理 GET：``/api/`` 走路由输出 JSON，其余按静态文件服务。"""
+            path = urlsplit(self.path).path
+            if not path.startswith("/api/"):
+                self._serve_static(path)
+                return
             try:
                 with db_lock:
                     status, obj = _route(conn, self.path)
@@ -195,6 +287,7 @@ def create_server(
     conn: sqlite3.Connection,
     host: str = "127.0.0.1",
     port: int = 0,
+    web_root: Optional[str] = None,
 ) -> ThreadingHTTPServer:
     """创建只读 HTTP 服务实例（未启动，需调用方 ``serve_forever`` / ``serve``）。
 
@@ -206,9 +299,11 @@ def create_server(
     :param conn: 已打开的 SQLite 连接（须为线程安全连接），处理请求时只读使用。
     :param host: 绑定地址，默认 ``"127.0.0.1"``（仅回环，不回 ``0.0.0.0``）。
     :param port: 端口，默认 ``0`` 表示由系统分配空闲端口（测试友好）。
+    :param web_root: 可选静态文件根目录；给出时提供静态文件服务，``None`` 时
+        非 ``/api`` 路径返回 404 JSON（保持旧行为）。
     :return: 配置好处理器的 ``ThreadingHTTPServer``，其 ``server_address`` 反映
         实际绑定地址与端口。
     """
-    handler_cls: Callable[..., BaseHTTPRequestHandler] = make_handler(conn)
+    handler_cls: Callable[..., BaseHTTPRequestHandler] = make_handler(conn, web_root)
     server = ThreadingHTTPServer((host, port), handler_cls)
     return server
