@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>shikar · 功能扩展原型（地铁 / 学区 / 医院 / 高铁 / 通勤）</title>
+<style>
+:root{
+  --paper:#e7e4d9; --paper-hi:#f1efe7; --ink:#17232a; --ink-soft:#4c5b60; --ink-faint:#6a756d;
+  --rule:#c7c1b0; --rule-soft:#d9d4c6; --hot:#b23a2b; --cold:#34536b; --ochre:#9a7432; --teal:#4a6e66;
+  --serif:"Songti SC","STSong","SimSun",Georgia,serif;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+  --mono:"Consolas","SFMono-Regular",monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.6;
+  background-image:repeating-radial-gradient(circle at 84% -12%,rgba(23,35,42,.045) 0 1px,transparent 1px 54px),repeating-radial-gradient(circle at 6% 118%,rgba(52,83,107,.05) 0 1px,transparent 1px 72px);}
+a{color:var(--cold);text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto;padding:0 24px}
+header{border-bottom:1px solid var(--ink);background:rgba(241,239,231,.92);position:sticky;top:0;z-index:10;backdrop-filter:blur(6px)}
+.head-row{display:flex;align-items:baseline;justify-content:space-between;padding:15px 0}
+.brand{font-family:var(--serif);font-size:21px;font-weight:700;letter-spacing:.05em}
+.tag{font-family:var(--mono);font-size:12px;color:var(--ink-soft);letter-spacing:.05em;border:1px solid var(--rule);padding:2px 8px;border-radius:2px}
+nav{display:flex;gap:2px;border-top:1px solid var(--rule-soft)}
+nav button{appearance:none;background:none;border:none;border-bottom:2px solid transparent;font-family:var(--serif);font-size:15px;letter-spacing:.06em;color:var(--ink-soft);padding:10px 16px;cursor:pointer}
+nav button.active{color:var(--ink);border-bottom-color:var(--hot)}
+h1.view-title{font-family:var(--serif);font-size:28px;margin:22px 0 6px;letter-spacing:.02em}
+.view-sub{color:var(--ink-soft);font-size:13px;margin-bottom:16px}
+.panel{border-top:2px solid var(--ink);background:var(--paper-hi);border:1px solid var(--rule);border-top-width:2px;padding:16px 18px;margin-bottom:18px}
+.filters{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 18px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld label{font-size:12px;color:var(--ink-faint);letter-spacing:.06em}
+.fld select,.fld input[type=text]{font-family:var(--serif);font-size:14px;color:var(--ink);background:transparent;border:1px solid var(--ink);border-radius:0;padding:6px 8px}
+.fld input[type=range]{accent-color:var(--hot)}
+.fld .hintv{font-family:var(--mono);font-size:12px;color:var(--hot)}
+.commute-row{grid-column:1 / -1;display:grid;grid-template-columns:1fr 1fr 1.2fr 1fr;gap:14px 18px;border-top:1px dotted var(--rule);padding-top:12px;margin-top:2px}
+.btn{appearance:none;border:1px solid var(--ink);background:var(--ink);color:var(--paper-hi);font-family:var(--serif);font-size:14px;letter-spacing:.08em;padding:7px 18px;cursor:pointer;border-radius:0}
+.btn.ghost{background:transparent;color:var(--ink)}
+.results-head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--ink);padding-bottom:8px;margin:6px 0 0}
+.results-head h2{font-family:var(--serif);font-size:17px;margin:0;letter-spacing:.06em}
+.results-head .count{font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.row{display:grid;grid-template-columns:2.2fr 1fr 1.6fr 1.7fr 1fr 1.4fr;gap:14px;align-items:center;padding:12px 4px;border-bottom:1px dotted var(--rule);font-size:13.5px}
+.row:hover{background:rgba(23,35,42,.04)}
+.row .nm{font-family:var(--serif);font-size:16px;font-weight:700}
+.row .nm small{display:block;font-family:var(--sans);font-size:11.5px;color:var(--ink-faint);font-weight:400;letter-spacing:.04em}
+.row .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.row .lab{font-size:11px;color:var(--ink-faint);display:block;letter-spacing:.05em}
+.price{font-family:var(--serif);font-size:16px;font-weight:700}
+.tagline{display:inline-block;font-size:11px;border:1px solid currentColor;border-left-width:3px;padding:1px 6px;color:var(--teal)}
+.tagline.h{tooltip:""}
+.muted{color:var(--ink-faint)}
+.empty{padding:30px;text-align:center;color:var(--ink-faint)}
+.note{font-size:12px;color:var(--ink-faint);margin-top:10px;border-left:2px solid var(--ochre);padding-left:10px}
+table.menu{width:100%;border-collapse:collapse;font-size:13.5px}
+table.menu th{text-align:left;font-family:var(--serif);font-weight:700;border-bottom:1px solid var(--ink);padding:8px 6px;letter-spacing:.05em;font-size:13px}
+table.menu td{border-bottom:1px dotted var(--rule);padding:9px 6px}
+table.menu tr{cursor:pointer}
+table.menu tr:hover td{background:rgba(23,35,42,.04)}
+.tabs{display:flex;gap:8px;margin:4px 0 14px}
+.tabs button{font-family:var(--serif);border:1px solid var(--rule);background:transparent;padding:5px 14px;cursor:pointer;font-size:14px;letter-spacing:.05em;color:var(--ink-soft)}
+.tabs button.on{background:var(--ink);color:var(--paper-hi);border-color:var(--ink)}
+.detail-box{border:1px solid var(--rule);border-top:2px solid var(--ink);background:var(--paper-hi);padding:14px 16px;margin-top:14px}
+.rank-list{list-style:none;margin:0;padding:0}
+.rank-list li{display:flex;justify-content:space-between;gap:12px;padding:8px 4px;border-bottom:1px dotted var(--rule);font-size:13.5px}
+.rank-list li .r{font-family:var(--mono);font-size:12px;color:var(--ink-faint);width:28px}
+.footer{border-top:1px solid var(--rule);margin-top:30px;padding:16px 0 30px;color:var(--ink-faint);font-size:12px;letter-spacing:.04em}
+.hide{display:none!important}
+/* 通勤视觉 */
+.scorebar{height:6px;background:var(--rule-soft);position:relative;width:100px;display:inline-block;vertical-align:middle}
+.scorebar i{position:absolute;left:0;top:0;bottom:0;background:var(--hot)}
+@media(max-width:900px){.filters{grid-template-columns:repeat(2,1fr)}.commute-row{grid-template-columns:1fr 1fr}.row{grid-template-columns:1.6fr 1fr 1.6fr;gap:8px}.row .col-hide{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap head-row">
+    <div class="brand">shikar · 京津小区行情观测</div>
+    <div class="tag">原型演示 · 模拟数据</div>
+  </div>
+  <div class="wrap">
+    <nav id="nav">
+      <button data-view="find" class="active">找小区</button>
+      <button data-view="school">学校</button>
+      <button data-view="hospital">医院</button>
+      <button data-view="commute">通勤</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- ============ 找小区 ============ -->
+  <section id="view-find">
+    <h1 class="view-title">按条件找小区</h1>
+    <div class="view-sub">地铁沿线 · 学区 · 医疗 · 高铁 · 双点通勤加权（原型：全部为模拟数据）</div>
+
+    <div class="panel">
+      <div class="filters">
+        <div class="fld"><label>地铁线路</label><select id="f_line"></select></div>
+        <div class="fld"><label>学区阶段</label>
+          <select id="f_stage"><option value="">不限</option><option value="primary">小学</option><option value="middle">初中</option><option value="high">高中</option></select>
+        </div>
+        <div class="fld"><label>学校最大距离 <span class="hintv" id="v_school">2.0 km</span></label><input id="f_school" type="range" min="0.5" max="5" step="0.5" value="2"></div>
+        <div class="fld"><label>医院等级</label>
+          <select id="f_grade"><option value="">不限</option><option value="三甲">三甲</option><option value="二甲">二甲</option></select>
+        </div>
+        <div class="fld"><label>医院最大距离 <span class="hintv" id="v_hosp">3.0 km</span></label><input id="f_hosp" type="range" min="0.5" max="8" step="0.5" value="3"></div>
+        <div class="fld"><label>高铁站最大距离 <span class="hintv" id="v_hsr">5.0 km</span></label><input id="f_hsr" type="range" min="0.5" max="12" step="0.5" value="5"></div>
+        <div class="fld"><label>通勤模式</label>
+          <select id="f_mode"><option value="driving">驾车</option><option value="transit">公共交通</option></select>
+        </div>
+        <div class="fld"><label>&nbsp;</label><button class="btn" id="btn_reset" type="button">重置</button></div>
+
+        <div class="commute-row">
+          <div class="fld"><label>地点 A</label><input id="f_a" type="text" value="国贸" /></div>
+          <div class="fld"><label>地点 B</label><input id="f_b" type="text" value="中关村" /></div>
+          <div class="fld"><label>权重：A 优先 <span class="hintv" id="v_w">均衡</span> B 优先</label><input id="f_w" type="range" min="0" max="100" step="5" value="50"></div>
+          <div class="fld"><label>&nbsp;</label><button class="btn ghost" id="btn_apply" type="button">应用筛选</button></div>
+        </div>
+      </div>
+      <div class="note">说明：通勤按「加权分 = w·A + (1−w)·B」排序，w=50 为均衡；权重拉向哪边，就优先保证该地点的通勤效率。</div>
+    </div>
+
+    <div class="results-head"><h2>筛选结果</h2><span class="count" id="result_count"></span></div>
+    <div id="result_rows"></div>
+  </section>
+
+  <!-- ============ 学校 ============ -->
+  <section id="view-school" class="hide">
+    <h1 class="view-title">学校 · 明细</h1>
+    <div class="view-sub">按阶段查看学校，点学校看「周边小区 Top 20」（按距离）</div>
+    <div class="tabs" id="stage_tabs">
+      <button data-stage="primary" class="on">小学</button>
+      <button data-stage="middle">初中</button>
+      <button data-stage="high">高中</button>
+    </div>
+    <div class="panel" style="padding:0;border:none;background:transparent">
+      <table class="menu"><thead><tr><th>学校</th><th>所在区</th><th>类型</th><th>辐射小区数</th><th>平均距离</th></tr></thead><tbody id="school_rows"></tbody></table>
+    </div>
+    <div id="school_detail"></div>
+  </section>
+
+  <!-- ============ 医院 ============ -->
+  <section id="view-hospital" class="hide">
+    <h1 class="view-title">医院 · 明细</h1>
+    <div class="view-sub">点医院看「周边小区排名 Top 20」（按距离；含等级）</div>
+    <div class="panel" style="padding:0;border:none;background:transparent">
+      <table class="menu"><thead><tr><th>医院</th><th>所在区</th><th>等级</th><th>辐射小区数</th><th>最近距离</th></tr></thead><tbody id="hospital_rows"></tbody></table>
+    </div>
+    <div id="hospital_detail"></div>
+  </section>
+
+  <!-- ============ 通勤 ============ -->
+  <section id="view-commute" class="hide">
+    <h1 class="view-title">按通勤时间找小区</h1>
+    <div class="view-sub">录入两个地点，设置权重（单点优先 / 均衡），按加权通勤时间排序（原型模拟）</div>
+    <div class="panel">
+      <div class="filters">
+        <div class="fld"><label>地点 A</label><input id="c_a" type="text" value="国贸" /></div>
+        <div class="fld"><label>地点 B</label><input id="c_b" type="text" value="中关村" /></div>
+        <div class="fld"><label>模式</label><select id="c_mode"><option value="driving">驾车</option><option value="transit">公共交通</option></select></div>
+        <div class="fld"><label>权重：A 优先 <span class="hintv" id="v_cw">均衡</span> B 优先</label><input id="c_w" type="range" min="0" max="100" step="5" value="50"></div>
+      </div>
+    </div>
+    <div class="results-head"><h2>通勤优先榜</h2><span class="count" id="commute_count"></span></div>
+    <div id="commute_rows"></div>
+  </section>
+
+  <div class="footer">
+    shikar 功能扩展原型 · 地铁沿线 / 学区 / 医疗 / 高铁 / 双点通勤加权 · 数据为演示用模拟值 · 仅供参考
+  </div>
+</main>
+
+<script>
+/* ============ 模拟数据 ============ */
+const COMM = [
+  {name:"望京新城", district:"朝阳", plate:"望京", price:68000, line:"15号线", station:"望京", sdist:0.4,
+   primary:{n:"望京实验小学",d:0.6}, middle:{n:"陈经纶中学",d:1.2}, high:{n:"北京市第八十中学",d:2.1},
+   hosp:{n:"中日友好医院",grade:"三甲",d:3.2}, hsr:{n:"北京朝阳站",d:6.5}, ta:25, tb:40},
+  {name:"华清嘉园", district:"海淀", plate:"五道口", price:108000, line:"13号线", station:"五道口", sdist:0.3,
+   primary:{n:"中关村第一小学",d:0.8}, middle:{n:"清华附中",d:1.5}, high:{n:"人大附中",d:2.0},
+   hosp:{n:"北京大学第三医院",grade:"三甲",d:2.5}, hsr:{n:"清河站",d:8.0}, ta:15, tb:35},
+  {name:"京华豪园", district:"朝阳", plate:"朝阳门", price:49480, line:"6号线", station:"朝阳门", sdist:0.5,
+   primary:{n:"史家胡同小学",d:0.7}, middle:{n:"北京市第二中学",d:1.0}, high:{n:"北京市第五中学",d:1.6},
+   hosp:{n:"北京协和医院",grade:"三甲",d:1.2}, hsr:{n:"北京站",d:3.0}, ta:10, tb:30},
+  {name:"回龙观C区", district:"昌平", plate:"回龙观", price:42000, line:"13号线", station:"回龙观", sdist:0.6,
+   primary:{n:"回龙观中心小学",d:0.9}, middle:{n:"昌平二中",d:2.2}, high:{n:"昌平一中",d:2.5},
+   hosp:{n:"积水潭医院回龙观院区",grade:"三甲",d:1.5}, hsr:{n:"清河站",d:5.0}, ta:45, tb:20},
+  {name:"中关村B区", district:"海淀", plate:"中关村", price:95000, line:"4号线", station:"中关村", sdist:0.35,
+   primary:{n:"中关村第二小学",d:0.5}, middle:{n:"北大附中",d:1.1}, high:{n:"人大附中",d:1.8},
+   hosp:{n:"海淀医院",grade:"二甲",d:1.0}, hsr:{n:"北京北站",d:4.0}, ta:18, tb:22},
+  {name:"和平D区", district:"和平", plate:"小白楼", price:60000, line:"1号线", station:"小白楼", sdist:0.4,
+   primary:{n:"岳阳道小学",d:0.6}, middle:{n:"汇文中学",d:1.0}, high:{n:"耀华中学",d:1.4},
+   hosp:{n:"天津医科大学总医院",grade:"三甲",d:1.8}, hsr:{n:"天津站",d:2.0}, ta:12, tb:15},
+  {name:"梅江E区", district:"河西", plate:"梅江", price:35000, line:"6号线", station:"梅江道", sdist:0.7,
+   primary:{n:"上海道小学",d:1.0}, middle:{n:"新华中学",d:1.5}, high:{n:"实验中学",d:2.0},
+   hosp:{n:"天津医院",grade:"三甲",d:2.2}, hsr:{n:"天津南站",d:9.0}, ta:30, tb:25},
+  {name:"鼓楼F区", district:"南开", plate:"鼓楼", price:38000, line:"2号线", station:"鼓楼", sdist:0.3,
+   primary:{n:"中营小学",d:0.5}, middle:{n:"南开中学",d:0.9}, high:{n:"耀华中学",d:1.6},
+   hosp:{n:"天津医科大学总医院",grade:"三甲",d:2.0}, hsr:{n:"天津站",d:3.5}, ta:20, tb:18},
+  {name:"望京SOHO公寓", district:"朝阳", plate:"望京", price:70000, line:"15号线", station:"望京", sdist:0.2,
+   primary:{n:"望京实验小学",d:1.1}, middle:{n:"陈经纶中学",d:0.8}, high:{n:"北京市第八十中学",d:1.9},
+   hosp:{n:"中日友好医院",grade:"三甲",d:2.8}, hsr:{n:"北京朝阳站",d:6.0}, ta:22, tb:42},
+  {name:"首开琅樾", district:"朝阳", plate:"将台", price:52000, line:"14号线", station:"将台", sdist:0.6,
+   primary:{n:"将台路小学",d:0.9}, middle:{n:"陈经纶中学",d:1.6}, high:{n:"北京市第八十中学",d:2.8},
+   hosp:{n:"北京华信医院",grade:"三甲",d:2.0}, hsr:{n:"北京朝阳站",d:2.5}, ta:28, tb:38},
+  {name:"中骏宸璟府", district:"北辰", plate:"刘园", price:30000, line:"1号线", station:"刘园", sdist:0.8,
+   primary:{n:"刘园小学",d:1.2}, middle:{n:"北辰实验中学",d:2.0}, high:{n:"天津一中",d:3.5},
+   hosp:{n:"天津医科大学第二医院",grade:"三甲",d:3.0}, hsr:{n:"天津西站",d:6.0}, ta:35, tb:30},
+  {name:"万科东第", district:"通州", plate:"北关", price:45000, line:"6号线", station:"通州北关", sdist:0.5,
+   primary:{n:"北关小学",d:0.7}, middle:{n:"通州二中",d:1.4}, high:{n:"潞河中学",d:2.2},
+   hosp:{n:"北京潞河医院",grade:"三甲",d:1.8}, hsr:{n:"北京城市副中心站",d:1.5}, ta:40, tb:50}
+];
+
+/* ============ 工具 ============ */
+const $ = s => document.querySelector(s);
+const stageLabel = {primary:"小学", middle:"初中", high:"高中"};
+const lines = [...new Set(COMM.map(c=>c.line))];
+function fillLine(){ const s=$("#f_line"); s.innerHTML='<option value="">不限</option>'+lines.map(l=>`<option>${l}</option>`).join(''); }
+function fmtMoney(v){ return v?("¥"+v.toLocaleString()):"—"; }
+
+/* ============ 找小区 ============ */
+function currentCommutew(){ return Number($("#f_w").value)/100; }
+function ensureQueryInputs(){
+  // 若地点不是默认，用简单哈希制造合理差异（原型模拟）
+  function off(text){ let h=0; for(const ch of text) h=(h*31+ch.charCodeAt(0))%17; return h; }
+  const a=$("#f_a").value||"A", b=$("#f_b").value||"B";
+  const da=off(a)-8, db=off(b)-8;
+  return COMM.map(c=>({...c, ta: Math.max(5, c.ta + da), tb: Math.max(5, c.tb + db)}));
+}
+function renderFind(){
+  const list = ensureQueryInputs();
+  const line=$("#f_line").value, stage=$("#f_stage").value;
+  const smax=Number($("#f_school").value), hmax=Number($("#f_hosp").value), rmax=Number($("#f_hsr").value);
+  const grade=$("#f_grade").value, w=currentCommutew();
+  const rows = list.filter(c=>{
+    if(line && c.line!==line) return false;
+    if(grade && c.hosp.grade!==grade) return false;
+    if(stage && c[stage].d>smax) return false;
+    if(c.hosp.d>hmax) return false;
+    if(c.hsr.d>rmax) return false;
+    return true;
+  }).map(c=>({...c, score: w*(c.ta||0) + (1-w)*(c.tb||0)}))
+    .sort((a,b)=>a.score-b.score);
+  $("#result_count").textContent = `共 ${rows.length} 个小区 · 按加权通勤排序`;
+  const host=$("#result_rows");
+  if(!rows.length){ host.innerHTML='<div class="empty">没有满足条件的小区，试试放宽距离或去掉筛选。</div>'; return; }
+  host.innerHTML = rows.map(c=>`
+    <div class="row">
+      <div class="nm">${c.name}<small>${c.district} · ${c.plate}</small></div>
+      <div class="price">${fmtMoney(c.price)}</div>
+      <div><span class="lab">最近地铁</span><span class="tagline">${c.line} · ${c.station} ${c.sdist}km</span></div>
+      <div><span class="lab">对口${stageLabel[stage||"primary"]}</span>${(stage?c[stage]:c.primary).n} · ${(stage?c[stage]:c.primary).d}km</div>
+      <div class="col-hide"><span class="lab">最近医院</span>${c.hosp.n} <span class="muted">${c.hosp.grade} ${c.hosp.d}km</span></div>
+      <div><span class="lab">通勤 A/B · 加权</span><span class="num">${c.ta} / ${c.tb} 分</span> · <b class="num" style="color:var(--hot)">${c.score.toFixed(1)}</b></div>
+    </div>`).join('');
+}
+
+/* ============ 学校菜单 ============ */
+let curStage="primary";
+function schoolRegistry(stage){
+  const map={};
+  COMM.forEach(c=>{ const s=c[stage]; if(!s) return; (map[s.n]=map[s.n]||{name:s.n,district:c.district,stage,items:[]}).items.push({c, d:s.d}); });
+  return Object.values(map).map(g=>({...g, count:g.items.length, avg:(g.items.reduce((a,x)=>a+x.d,0)/g.items.length)}))
+    .sort((a,b)=>b.count-a.count);
+}
+function renderSchool(){
+  const reg=schoolRegistry(curStage);
+  $("#school_rows").innerHTML = reg.map(g=>`<tr data-school="${g.name}"><td>${g.name}</td><td>${g.district}</td><td>${stageLabel[curStage]}</td><td class="num">${g.count}</td><td class="num">${g.avg.toFixed(2)} km</td></tr>`).join('');
+  $("#school_rows").querySelectorAll("tr").forEach(tr=>tr.onclick=()=>showSchool(tr.dataset.school));
+  $("#school_detail").innerHTML="";
+}
+function showSchool(name){
+  const reg=schoolRegistry(curStage); const g=reg.find(x=>x.name===name); if(!g) return;
+  const top=g.items.slice().sort((a,b)=>a.d-b.d).slice(0,20);
+  $("#school_detail").innerHTML = `<div class="detail-box"><b>${name}</b> · 周边小区 Top 20（按距离）<ul class="rank-list">
+    ${top.map((x,i)=>`<li><span><span class="r">${i+1}</span>${x.c.name} <span class="muted">· ${x.c.district}</span></span><span class="num">${x.d.toFixed(2)} km</span></li>`).join('')}
+  </ul></div>`;
+}
+
+/* ============ 医院菜单 ============ */
+function hospitalRegistry(){
+  const map={};
+  COMM.forEach(c=>{ const h=c.hosp; (map[h.n]=map[h.n]||{name:h.n,grade:h.grade,district:c.district,items:[]}).items.push({c,d:h.d}); });
+  return Object.values(map).map(g=>({...g,count:g.items.length, min:Math.min(...g.items.map(x=>x.d))})).sort((a,b)=>a.min-b.min);
+}
+function renderHospital(){
+  const reg=hospitalRegistry();
+  $("#hospital_rows").innerHTML = reg.map(g=>`<tr data-h="${g.name}"><td>${g.name}</td><td>${g.district}</td><td><span class="tagline">${g.grade}</span></td><td class="num">${g.count}</td><td class="num">${g.min.toFixed(2)} km</td></tr>`).join('');
+  $("#hospital_rows").querySelectorAll("tr").forEach(tr=>tr.onclick=()=>showHospital(tr.dataset.h));
+  $("#hospital_detail").innerHTML="";
+}
+function showHospital(name){
+  const reg=hospitalRegistry(); const g=reg.find(x=>x.name===name); if(!g) return;
+  const top=g.items.slice().sort((a,b)=>a.d-b.d).slice(0,20);
+  $("#hospital_detail").innerHTML = `<div class="detail-box"><b>${name}</b> · ${g.grade} · 周边小区排名 Top 20（按距离）<ul class="rank-list">
+    ${top.map((x,i)=>`<li><span><span class="r">${i+1}</span>${x.c.name} <span class="muted">· ${x.c.district}</span></span><span class="num">${x.d.toFixed(2)} km</span></li>`).join('')}
+  </ul></div>`;
+}
+
+/* ============ 通勤 ============ */
+function renderCommute(){
+  const w=Number($("#c_w").value)/100;
+  const a=$("#c_a").value||"A", b=$("#c_b").value||"B";
+  function off(text){ let h=0; for(const ch of text) h=(h*31+ch.charCodeAt(0))%17; return h; }
+  const list=COMM.map(c=>({...c, ta: Math.max(5,c.ta+off(a)-8), tb: Math.max(5,c.tb+off(b)-8)}));
+  const rows=list.map(c=>({...c, score: w*c.ta+(1-w)*c.tb})).sort((x,y)=>x.score-y.score);
+  $("#commute_count").textContent=`${a} ↔ ${b} · ${w>=0.5?("A 权重 "+Math.round(w*100)+"%"):("B 权重 "+Math.round((1-w)*100)+"%")} · 共 ${rows.length} 个`;
+  const max=Math.max(...rows.map(r=>r.score));
+  $("#commute_rows").innerHTML = rows.map((c,i)=>`
+    <div class="row" style="grid-template-columns:1.8fr 1fr 1fr 1.4fr">
+      <div class="nm">${c.name}<small>${c.district} · ${c.plate}</small></div>
+      <div><span class="lab">到 A（${a}）</span><span class="num">${c.ta} 分</span></div>
+      <div><span class="lab">到 B（${b}）</span><span class="num">${c.tb} 分</span></div>
+      <div><span class="lab">加权分</span><b class="num" style="color:var(--hot)">${c.score.toFixed(1)}</b>
+        <span class="scorebar"><i style="width:${Math.min(100,c.score/max*100)}%"></i></span></div>
+    </div>`).join('');
+}
+
+/* ============ 视图切换 & 绑定 ============ */
+const views={find:renderFind, school:renderSchool, hospital:renderHospital, commute:renderCommute};
+function show(view){
+  document.querySelectorAll("main > section").forEach(s=>s.classList.add("hide"));
+  $("#view-"+view).classList.remove("hide");
+  document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
+  (views[view]||function(){})();
+}
+document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>show(b.dataset.view));
+$("#f_school").oninput=e=>{ $("#v_school").textContent=Number(e.target.value).toFixed(1)+" km"; renderFind(); };
+$("#f_hosp").oninput=e=>{ $("#v_hosp").textContent=Number(e.target.value).toFixed(1)+" km"; renderFind(); };
+$("#f_hsr").oninput=e=>{ $("#v_hsr").textContent=Number(e.target.value).toFixed(1)+" km"; renderFind(); };
+$("#f_w").oninput=e=>{ const v=Number(e.target.value); $("#v_w").textContent = v===50?"均衡":(v>50?("A "+(v)+"%"):("B "+(100-v)+"%")); renderFind(); };
+$("#c_w").oninput=e=>{ const v=Number(e.target.value); $("#v_cw").textContent = v===50?"均衡":(v>50?("A "+(v)+"%"):("B "+(100-v)+"%")); renderCommute(); };
+["f_line","f_stage","f_grade"].forEach(id=>$("#"+id).onchange=renderFind);
+["f_a","f_b"].forEach(id=>$("#"+id).onchange=renderFind);
+["c_a","c_b","c_mode"].forEach(id=>$("#"+id).onchange=renderCommute);
+$("#btn_apply").onclick=renderFind;
+$("#btn_reset").onclick=()=>{ $("#f_line").value=""; $("#f_stage").value=""; $("#f_grade").value=""; $("#f_school").value=2; $("#f_hosp").value=3; $("#f_hsr").value=5; $("#f_w").value=50; $("#v_school").textContent="2.0 km"; $("#v_hosp").textContent="3.0 km"; $("#v_hsr").textContent="5.0 km"; $("#v_w").textContent="均衡"; renderFind(); };
+document.querySelectorAll("#stage_tabs button").forEach(b=>b.onclick=()=>{ document.querySelectorAll("#stage_tabs button").forEach(x=>x.classList.toggle("on",x===b)); curStage=b.dataset.stage; renderSchool(); });
+
+fillLine();
+show("find");
+</script>
+</body>
+</html>
