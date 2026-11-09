@@ -59,10 +59,10 @@ def main():
     xiaoqu = {}   # id -> meta
     metrics = []  # (xid, week, price, supply, mom4)
 
-    def add_xq(xid, city, district, plate, name, build_year=None):
+    def add_xq(xid, city, district, plate, name, build_year=None, lng=None, lat=None):
         if xid not in xiaoqu:
             xiaoqu[xid] = {"id": xid, "city": city, "district": district, "plate": plate,
-                           "name": name, "build_year": build_year}
+                           "name": name, "build_year": build_year, "lng": lng, "lat": lat}
 
     # 2026 当期
     for r in cur:
@@ -78,13 +78,18 @@ def main():
     matched = 0
     for r in rows2019:
         city = r["city"]; name = r["xiaoqu_name"].strip()
+        lng = to_float(r.get("lng")); lat = to_float(r.get("lat"))
         key = (city, name)
         if key in cur_by_key:
             xid = f'{cur_by_key[key]["city"]}|{cur_by_key[key]["xiaoqu_id"]}'
             matched += 1
+            # 用 2019 数据回填坐标（2026 快照无坐标）
+            if lng is not None and lat is not None:
+                xiaoqu[xid]["lng"] = lng
+                xiaoqu[xid]["lat"] = lat
         else:
             xid = f'{city}|2019|{r["xiaoqu_id"]}'
-            add_xq(xid, city, r["district"], r.get("plate") or None, name)
+            add_xq(xid, city, r["district"], r.get("plate") or None, name, lng=lng, lat=lat)
         metrics.append((xid, r["week"], to_float(r["price"]), None, None))
 
     # —— 数据充足度：≥3 期、跨度≥365天、相邻缺口≤365天，才允许计算温度/阶段 ——
