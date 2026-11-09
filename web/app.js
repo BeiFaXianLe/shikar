@@ -2,11 +2,13 @@
  *
  * 路由（hash）：
  *   首页     #/
+ *   小区目录  #/catalog
  *   小区详情  #/xiaoqu/<id>
  *
  * 数据来源（相对路径的同源 API）：
  *   GET /api/overview?city=&district=   （首页总览，可按区筛选）
  *   GET /api/districts?city=            （首页各区下拉数据）
+ *   GET /api/catalog?city=&district=&q=&page=&page_size=  （小区目录：筛选 + 搜索 + 分页）
  *   GET /api/xiaoqu/{id}
  *   GET /api/xiaoqu/{id}/series
  *   GET /api/xiaoqu/{id}/signals
@@ -414,15 +416,27 @@
 
         var head = el("div", { class: "page-head" }, [
           el("h1", { text: "市场温度总览" }),
-          el("span", {
-            class: "sub",
-            text: data && data.week ? "数据周 " + data.week : "",
-          }),
+          el("div", { class: "page-head-aside" }, [
+            el("span", {
+              class: "sub",
+              text: data && data.week ? "数据周 " + data.week : "",
+            }),
+            el("a", {
+              class: "catalog-entry",
+              href: "#/catalog",
+              text: "浏览小区目录 →",
+            }),
+          ]),
         ]);
         appEl.appendChild(head);
 
         if (cities.length === 0) {
           appEl.appendChild(stateNode("empty", "暂无足够数据：温度与趋势需要每个小区至少 3 期可比历史（当前数据多为 1–2 期）。请点开具体小区查看原始读数；历史会随每周快照逐步积累。"));
+          appEl.appendChild(
+            el("div", { class: "empty-cta" }, [
+              el("a", { class: "catalog-entry", href: "#/catalog", text: "浏览全部小区目录（按城市 / 区 / 搜索）→" }),
+            ])
+          );
           return;
         }
 
@@ -604,11 +618,225 @@
   }
 
   // -------------------------------------------------------------------------
+  // 小区目录
+  // -------------------------------------------------------------------------
+  /** 目录页每页条数。 */
+  var CATALOG_PAGE_SIZE = 50;
+
+  /** 目录页状态（城市 / 区 / 关键词 / 页码 / 区列表）。 */
+  var catalogState = {
+    city: "",
+    district: "",
+    q: "",
+    page: 1,
+    districts: [],
+  };
+
+  /** 格式化「区 · 板块」展示串（去空）。 */
+  function locText(district, plate) {
+    return [district, plate].filter(Boolean).join(" · ");
+  }
+
+  function renderCatalog() {
+    var state = catalogState;
+    appEl.innerHTML = "";
+
+    var head = el("div", { class: "page-head" }, [
+      el("h1", { text: "小区目录" }),
+      el("div", { class: "page-head-aside" }, [
+        el("a", { class: "catalog-entry", href: "#/", text: "← 返回总览" }),
+      ]),
+    ]);
+    appEl.appendChild(head);
+
+    // 过滤条
+    var citySelect = el("select", { class: "district-select", "aria-label": "城市" }, [
+      el("option", { value: "", text: "全部城市" }),
+      el("option", { value: "北京", text: "北京" }),
+      el("option", { value: "天津", text: "天津" }),
+    ]);
+    citySelect.value = state.city;
+
+    var districtSelect = el("select", { class: "district-select", "aria-label": "区" }, [
+      el("option", { value: "", text: "全部区" }),
+    ]);
+    districtSelect.value = state.district;
+    districtSelect.disabled = !state.city;
+
+    var qInput = el("input", {
+      type: "search",
+      class: "catalog-input",
+      placeholder: "搜索小区名（支持部分匹配）",
+      "aria-label": "搜索小区名",
+      value: state.q,
+    });
+
+    var searchBtn = el("button", { class: "catalog-btn", type: "button", text: "搜索" });
+
+    var filterBar = el("form", { class: "catalog-filter", role: "search" }, [
+      el("div", { class: "cf-field" }, [el("label", { text: "城市" }), citySelect]),
+      el("div", { class: "cf-field" }, [el("label", { text: "区" }), districtSelect]),
+      el("div", { class: "cf-field cf-grow" }, [el("label", { text: "搜索" }), qInput]),
+      el("div", { class: "cf-field cf-actions" }, [searchBtn]),
+    ]);
+    appEl.appendChild(filterBar);
+
+    var resultHost = el("div", { class: "catalog-results" });
+    appEl.appendChild(resultHost);
+
+    // 填充区下拉
+    function fillDistricts(rows) {
+      districtSelect.innerHTML = "";
+      districtSelect.appendChild(el("option", { value: "", text: "全部区" }));
+      (rows || []).forEach(function (r) {
+        if (!r || !r.district) return;
+        districtSelect.appendChild(el("option", { value: r.district, text: r.district }));
+      });
+      // 若当前选中区已不在列表里，重置。
+      var exists = (rows || []).some(function (r) { return r && r.district === state.district; });
+      if (!exists) state.district = "";
+      districtSelect.value = state.district;
+      districtSelect.disabled = (rows || []).length === 0;
+    }
+
+    function loadDistricts() {
+      if (!state.city) {
+        fillDistricts([]);
+        districtSelect.disabled = true;
+        return;
+      }
+      fetchDistricts(state.city).then(function (rows) {
+        state.districts = rows || [];
+        fillDistricts(state.districts);
+      });
+    }
+
+    function loadPage(page) {
+      state.page = page < 1 ? 1 : page;
+      resultHost.innerHTML = "";
+      resultHost.appendChild(stateNode("loading", "正在加载小区…"));
+      var params = {
+        city: state.city,
+        district: state.district,
+        q: state.q,
+        page: state.page,
+        page_size: CATALOG_PAGE_SIZE,
+      };
+      getJSON("/api/catalog" + buildQuery(params))
+        .then(function (data) {
+          paintResults(data);
+        })
+        .catch(function (err) {
+          resultHost.innerHTML = "";
+          resultHost.appendChild(stateNode("error", "目录加载失败：" + err.message));
+        });
+    }
+
+    function paintResults(data) {
+      resultHost.innerHTML = "";
+      var items = (data && data.items) || [];
+      var total = data && typeof data.total === "number" ? data.total : items.length;
+      var pageSize = (data && data.page_size) || CATALOG_PAGE_SIZE;
+      var page = (data && data.page) || 1;
+      var totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+      if (items.length === 0) {
+        resultHost.appendChild(stateNode("empty", "没有匹配的小区"));
+        appendPager(resultHost, total, page, totalPages);
+        return;
+      }
+
+      var list = el("ol", { class: "catalog-list" });
+      items.forEach(function (it) {
+        var loc = locText(it.district, it.plate);
+        var href = "#/xiaoqu/" + encodeURIComponent(it.id);
+        var rowMeta = el("div", { class: "cl-meta" }, [
+          el("span", { class: "cl-loc", text: loc || "—" }),
+          el("span", { class: "cl-dp", text: (it.data_points == null ? 0 : it.data_points) + " 期" }),
+        ]);
+        var priceText = it.latest_price === null || it.latest_price === undefined
+          ? "—"
+          : "¥" + fmtNum(it.latest_price, 0);
+        var momText = "";
+        if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
+          momText = fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
+        }
+        var priceBox = el("div", { class: "cl-price" }, [
+          el("span", { class: "cl-price-v", text: priceText }),
+          momText ? el("span", { class: "cl-mom" + (Number(it.latest_mom) >= 0 ? " up" : " down"), text: "近月 " + momText }) : null,
+        ]);
+        var main = el("div", { class: "cl-main" }, [
+          el("div", { class: "cl-name", text: it.name || it.id || "—" }),
+          rowMeta,
+        ]);
+        list.appendChild(
+          el("li", { class: "catalog-item" }, [
+            el("a", { class: "cl-link", href: href }, [main, priceBox]),
+          ])
+        );
+      });
+      resultHost.appendChild(list);
+      appendPager(resultHost, total, page, totalPages);
+    }
+
+    function appendPager(host, total, page, totalPages) {
+      var pager = el("div", { class: "catalog-pager" });
+      pager.appendChild(
+        el("span", { class: "pg-summary", text: "共 " + total + " 个 · 第 " + page + " / " + totalPages + " 页" })
+      );
+      var prev = el("button", {
+        class: "catalog-btn pg-prev", type: "button", text: "上一页",
+      });
+      if (page <= 1) prev.disabled = true;
+      prev.addEventListener("click", function () { if (page > 1) loadPage(page - 1); });
+
+      var next = el("button", {
+        class: "catalog-btn pg-next", type: "button", text: "下一页",
+      });
+      if (page >= totalPages) next.disabled = true;
+      next.addEventListener("click", function () { if (page < totalPages) loadPage(page + 1); });
+
+      pager.appendChild(prev);
+      pager.appendChild(next);
+      host.appendChild(pager);
+    }
+
+    // 事件绑定
+    citySelect.addEventListener("change", function () {
+      state.city = citySelect.value;
+      state.district = "";
+      state.page = 1;
+      loadDistricts();
+      loadPage(1);
+    });
+    districtSelect.addEventListener("change", function () {
+      state.district = districtSelect.value;
+      state.page = 1;
+      loadPage(1);
+    });
+    function submitSearch(ev) {
+      if (ev) ev.preventDefault();
+      state.q = qInput.value.trim();
+      state.page = 1;
+      loadPage(1);
+    }
+    searchBtn.addEventListener("click", submitSearch);
+    filterBar.addEventListener("submit", submitSearch);
+    qInput.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") submitSearch(ev);
+    });
+
+    // 首次加载
+    if (state.city) loadDistricts();
+    loadPage(state.page);
+  }
+
+  // -------------------------------------------------------------------------
   // 小区详情
   // -------------------------------------------------------------------------
   function renderDetail(id) {
     appEl.innerHTML = "";
-    appEl.appendChild(backLink());
+    appEl.appendChild(backLink("#/catalog", "← 返回目录"));
     appEl.appendChild(stateNode("loading", "正在加载小区详情…"));
 
     var detailP = getJSON("/api/xiaoqu/" + encodeURIComponent(id));
@@ -621,20 +849,23 @@
         var series = Array.isArray(res[1]) ? res[1] : [];
         var signals = Array.isArray(res[2]) ? res[2] : [];
         appEl.innerHTML = "";
-        appEl.appendChild(backLink());
+        appEl.appendChild(backLink("#/catalog", "← 返回目录"));
         appEl.appendChild(renderDetailHead(detail, series));
+        appEl.appendChild(renderTwoPeriodCompare(series));
         appEl.appendChild(renderSeriesSection(series));
         appEl.appendChild(renderSignalsSection(signals));
       })
       .catch(function (err) {
         appEl.innerHTML = "";
-        appEl.appendChild(backLink());
+        appEl.appendChild(backLink("#/catalog", "← 返回目录"));
         appEl.appendChild(stateNode("error", "加载失败：" + err.message));
       });
   }
 
-  function backLink() {
-    return el("a", { class: "back", href: "#/" }, [document.createTextNode("← 返回")]);
+  function backLink(href, label) {
+    return el("a", { class: "back", href: href || "#/" }, [
+      document.createTextNode(label || "← 返回"),
+    ]);
   }
 
   function latestValid(series, key) {
@@ -703,8 +934,78 @@
     return head;
   }
 
-  function readoutItem(k, v, unit) {
-    var val = el("span", { class: "rv" }, [document.createTextNode(v)]);
+  /**
+   * 「两期对比」块：仅当该小区恰有 2 期且期次不同时渲染。
+   * 展示两个时点的均价与涨跌幅；明确标注「跨源、样本有限，仅供参考」；
+   * 仍不显示温度 / 阶段（遵守 docs/04 口径）。期数 <2 或 >=3 时返回 null。
+   */
+  function renderTwoPeriodCompare(series) {
+    if (!series || series.length !== 2) return null;
+    var a = series[0];
+    var b = series[1];
+    if (!a || !b || a.week === b.week) return null;
+
+    var pa = a.price, pb = b.price;
+    var hasBoth =
+      pa !== null && pa !== undefined && !isNaN(Number(pa)) &&
+      pb !== null && pb !== undefined && !isNaN(Number(pb));
+
+    var changeText = "—";
+    if (hasBoth && Number(pa) !== 0) {
+      var pct = (Number(pb) - Number(pa)) / Number(pa) * 100;
+      changeText = (pct >= 0 ? "+" : "−") + fmtNum(Math.abs(pct), 1) + "%";
+    }
+
+    var aria =
+      (a.week || "") + " 均价 " + fmtNum(pa, 0) + " 元/㎡ → " +
+      (b.week || "") + " 均价 " + fmtNum(pb, 0) + " 元/㎡，约 " + changeText;
+
+    var section = el("section", { class: "section compare" });
+    section.appendChild(el("h2", { text: "两期对比" }));
+
+    var row = el("div", { class: "compare-row", role: "group", "aria-label": "两期均价对比：" + aria });
+
+    function point(rec, price, cls) {
+      return el("div", { class: "compare-point " + cls }, [
+        el("span", { class: "cp-week", text: rec.week || "—" }),
+        el("span", { class: "cp-price" }, [
+          document.createTextNode("¥" + fmtNum(price, 0)),
+          el("span", { class: "cp-unit", text: " 元/㎡" }),
+        ]),
+      ]);
+    }
+
+    row.appendChild(point(a, pa, "cp-a"));
+    row.appendChild(el("div", { class: "compare-arrow", text: "→" }));
+    row.appendChild(point(b, pb, "cp-b"));
+
+    section.appendChild(row);
+
+    var upDown = "—";
+    if (hasBoth && Number(pa) !== 0) {
+      upDown = Number(pb) >= Number(pa) ? "涨" : "跌";
+    }
+    section.appendChild(
+      el("div", { class: "compare-change" }, [
+        el("span", { class: "cc-label", text: "两期涨跌幅" }),
+        el("span", {
+          class: "cc-value" + (hasBoth ? (Number(pb) >= Number(pa) ? " up" : " down") : ""),
+          text: changeText,
+        }),
+        el("span", { class: "cc-note", text: "（约 " + upDown + "）" }),
+      ])
+    );
+
+    section.appendChild(
+      el("p", {
+        class: "compare-note",
+        text: "仅有 2 个时点，且两期可能来自不同平台；跨源、样本有限，仅供参考。",
+      })
+    );
+    return section;
+  }
+
+  function readoutItem(k, v, unit) {    var val = el("span", { class: "rv" }, [document.createTextNode(v)]);
     if (unit) val.appendChild(el("span", { class: "ru", text: unit }));
     return el("div", { class: "readout-item" }, [el("span", { class: "rk", text: k }), val]);
   }
@@ -824,6 +1125,7 @@
     var raw = window.location.hash || "#/";
     var path = raw.replace(/^#/, "");
     if (path === "" || path === "/") return { name: "home" };
+    if (path === "/catalog") return { name: "catalog" };
     var m = path.match(/^\/xiaoqu\/(.+)$/);
     if (m) return { name: "detail", id: decodeURIComponent(m[1]) };
     return { name: "unknown", raw: path };
@@ -833,6 +1135,8 @@
     var r = parseHash();
     if (r.name === "home") {
       renderOverview();
+    } else if (r.name === "catalog") {
+      renderCatalog();
     } else if (r.name === "detail") {
       renderDetail(r.id);
     } else {

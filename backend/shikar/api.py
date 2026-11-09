@@ -20,6 +20,7 @@
 * ``GET /api/health``                                  → ``{"status": "ok"}``
 * ``GET /api/overview?city=&district=``                → 首页总览聚合（可选过滤）
 * ``GET /api/districts?city=``                         → 「城市—区」列表（供筛选）
+* ``GET /api/catalog?city=&district=&q=&page=&page_size=`` → 小区目录（分页 + 搜索）
 * ``GET /api/xiaoqu?city=&district=``                  → 小区列表
 * ``GET /api/xiaoqu/{id}``                             → 单条小区 / 404
 * ``GET /api/xiaoqu/{id}/series?start_week=&end_week=``→ 周度指标（week 升序）
@@ -45,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import overview, storage
+from . import catalog, overview, storage
 
 __all__ = ["create_server", "make_handler"]
 
@@ -117,6 +118,25 @@ def _first(qs: dict[str, list[str]], key: str) -> Optional[str]:
     return value if value != "" else None
 
 
+def _first_int(qs: dict[str, list[str]], key: str) -> Optional[int]:
+    """取查询字符串中某个键的首个值并转为整数；缺失/空串/非法时返回 ``None``。
+
+    非法的整数字面量（如 ``abc``）按「未提供」处理，交由下游使用默认值，
+    以避免把明显的坏参数放大成 500。
+
+    :param qs: ``parse_qs`` 解析出的映射。
+    :param key: 查询参数名。
+    :return: 解析出的整数，或 ``None``。
+    """
+    raw = _first(qs, key)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # 路由处理
 # --------------------------------------------------------------------------- #
@@ -155,6 +175,22 @@ def _route(
         city = _first(qs, "city")
         district = _first(qs, "district")
         return 200, storage.list_xiaoqu(conn, city=city, district=district)
+
+    # /api/catalog  （小区目录：城市 / 区 / 关键词过滤 + 分页）
+    if path == "/api/catalog":
+        city = _first(qs, "city")
+        district = _first(qs, "district")
+        q = _first(qs, "q")
+        page = _first_int(qs, "page")
+        page_size = _first_int(qs, "page_size")
+        return 200, catalog.query_catalog(
+            conn,
+            city=city,
+            district=district,
+            q=q,
+            page=page if page is not None else 1,
+            page_size=page_size if page_size is not None else 50,
+        )
 
     # /api/xiaoqu/{id} 及其子资源
     prefix = "/api/xiaoqu/"

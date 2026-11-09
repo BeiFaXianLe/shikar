@@ -56,6 +56,28 @@ def test_app_js_references_api() -> None:
     assert "/api/xiaoqu/" in js, "app.js 未引用 /api/xiaoqu/"
 
 
+def test_app_js_catalog() -> None:
+    """``app.js`` 必须实现小区目录：引用 /api/catalog 与 #/catalog 路由。"""
+    js = _read("app.js")
+    assert "/api/catalog" in js, "app.js 未引用 /api/catalog"
+    assert "#/catalog" in js, "app.js 未包含 #/catalog 入口/路由"
+    assert '"/catalog"' in js or "'/catalog'" in js, "app.js 未解析 #/catalog 路由"
+    assert "page_size" in js, "app.js 未在目录请求中携带 page_size"
+
+
+def test_index_html_catalog_entry() -> None:
+    """``index.html`` 页脚应提供「小区目录」入口链接。"""
+    html = _read("index.html")
+    assert "#/catalog" in html, "index.html 未提供小区目录入口"
+
+
+def test_app_js_two_period_compare() -> None:
+    """``app.js`` 详情页应包含两期对比，且文案标注跨源/样本有限。"""
+    js = _read("app.js")
+    assert "两期对比" in js, "app.js 未包含「两期对比」块"
+    assert "样本有限" in js, "app.js 两期对比缺少「样本有限」提示"
+
+
 def test_app_js_district_filter() -> None:
     """``app.js`` 必须实现按区筛选：引用 /api/districts 与 district 查询。"""
     js = _read("app.js")
