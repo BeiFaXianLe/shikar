@@ -1,7 +1,10 @@
 """shikar 首页总览聚合：把一个连接上的小区最新指标聚合成总览结构。
 
-本模块在既有数据层 ``shikar.storage`` 之上提供单个纯聚合函数
-:func:`compute_overview`，供 ``api`` 层的 ``GET /api/overview`` 直接调用。
+本模块在既有数据层 ``shikar.storage`` 之上提供两个函数，供 ``api`` 层调用：
+
+* :func:`compute_overview`：聚合首页总览（可由 ``GET /api/overview`` 透传
+  可选的 ``city`` / ``district`` 过滤）；
+* :func:`list_districts`：列出可筛选的「城市—区」对（供 ``GET /api/districts``）。
 
 设计原则：
 
@@ -22,6 +25,13 @@
   * ``top_rising`` / ``top_falling``：分别按 ``mom4`` 降序 / 升序，各至多 5 条，
     且**只包含 ``mom4`` 非空的行**；
 * ``cities`` 按 city 名称升序排列。
+
+可选过滤（向后兼容）：
+
+* ``city`` 非 ``None`` 时只统计 ``xiaoqu.city`` 等于该值的小区；
+* ``district`` 非 ``None`` 时只统计 ``xiaoqu.district`` 等于该值的小区
+  （在 ``city`` 基础上再收窄）；
+* 不传任何过滤参数时行为与旧版完全一致。
 """
 
 from __future__ import annotations
@@ -31,7 +41,7 @@ from typing import Optional
 
 from . import storage
 
-__all__ = ["compute_overview"]
+__all__ = ["compute_overview", "list_districts"]
 
 #: 每个榜单最多返回的条数。
 _BOARD_SIZE = 5
@@ -80,8 +90,12 @@ def _top(rows: list[dict], key: str, reverse: bool) -> list[dict]:
     return sorted(rows, key=lambda item: item[key], reverse=reverse)[:_BOARD_SIZE]
 
 
-def compute_overview(conn: sqlite3.Connection) -> dict:
-    """聚合全部小区的最新指标，生成首页总览结构。
+def compute_overview(
+    conn: sqlite3.Connection,
+    city: Optional[str] = None,
+    district: Optional[str] = None,
+) -> dict:
+    """聚合小区的最新指标，生成首页总览结构（可选取城市 / 区过滤）。
 
     对每个小区（``storage.list_xiaoqu``）取其指标序列
     （``storage.get_metric_series``），挑出「按 ``week`` 升序、``temperature``
@@ -90,11 +104,18 @@ def compute_overview(conn: sqlite3.Connection) -> dict:
     * 全局 ``week`` 取所有最新行 ``week`` 的字符串最大值（无则 ``None``）；
     * 按 ``city`` 分组，逐城计算均温、小区数与四类榜单。
 
+    过滤在读取小区列表时下推给 :func:`shikar.storage.list_xiaoqu`：``city``
+    只保留该城小区，``district`` 在 ``city`` 基础上再收窄到该区。其余聚合
+    规则（均值、榜单、排序、返回结构）保持不变。
+
     :param conn: 已打开的 SQLite 连接（只读使用）。
-    :return: 形如 ``{"week": <str|None>, "cities": [...]}`` 的字典；空库返回
-        ``{"week": None, "cities": []}``。
+    :param city: 只统计该城市的小区；``None`` 表示不限城市。
+    :param district: 只统计该区的小区（在 ``city`` 基础上再过滤）；``None``
+        表示不限区。
+    :return: 形如 ``{"week": <str|None>, "cities": [...]}`` 的字典；空库或过滤
+        后无可用小区时返回 ``{"week": None, "cities": []}``。
     """
-    xiaoqu_list = storage.list_xiaoqu(conn)
+    xiaoqu_list = storage.list_xiaoqu(conn, city=city, district=district)
 
     # city -> 该城所有最新行对应的榜单条目列表。
     grouped: dict[str, list[dict]] = {}
@@ -142,3 +163,30 @@ def compute_overview(conn: sqlite3.Connection) -> dict:
         )
 
     return {"week": max(weeks) if weeks else None, "cities": cities_out}
+
+
+def list_districts(
+    conn: sqlite3.Connection, city: Optional[str] = None
+) -> list[dict]:
+    """列出可筛选的「城市—区」对，供首页区下拉使用。
+
+    直接读取 ``xiaoqu`` 表，取去重后的 ``(city, district)`` 组合，按 ``city``、
+    ``district`` 升序排列。``district`` 为 ``NULL`` 的记录（无法作为筛选项）
+    会被跳过。给定 ``city`` 时只返回该城市下的区。
+
+    :param conn: 已打开的 SQLite 连接（只读使用）。
+    :param city: 只列出该城市的区；``None`` 表示列出全部城市。
+    :return: ``[{"city": "北京", "district": "朝阳"}, ...]``，按 city、district
+        升序且去重；无数据时返回空列表。
+    """
+    sql = [
+        "SELECT DISTINCT city, district FROM xiaoqu",
+        "WHERE city IS NOT NULL AND district IS NOT NULL",
+    ]
+    params: list = []
+    if city is not None:
+        sql.append("AND city = ?")
+        params.append(city)
+    sql.append("ORDER BY city ASC, district ASC")
+    cur = conn.execute(" ".join(sql), params)
+    return [{"city": r["city"], "district": r["district"]} for r in cur.fetchall()]

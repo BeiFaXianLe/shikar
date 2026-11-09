@@ -18,7 +18,8 @@
 路由：
 
 * ``GET /api/health``                                  → ``{"status": "ok"}``
-* ``GET /api/overview``                                → 首页总览聚合
+* ``GET /api/overview?city=&district=``                → 首页总览聚合（可选过滤）
+* ``GET /api/districts?city=``                         → 「城市—区」列表（供筛选）
 * ``GET /api/xiaoqu?city=&district=``                  → 小区列表
 * ``GET /api/xiaoqu/{id}``                             → 单条小区 / 404
 * ``GET /api/xiaoqu/{id}/series?start_week=&end_week=``→ 周度指标（week 升序）
@@ -138,9 +139,16 @@ def _route(
     if path == "/api/health":
         return 200, {"status": "ok"}
 
-    # /api/overview  （首页总览聚合）
+    # /api/overview  （首页总览聚合，可选 city / district 过滤）
     if path == "/api/overview":
-        return 200, overview.compute_overview(conn)
+        city = _first(qs, "city")
+        district = _first(qs, "district")
+        return 200, overview.compute_overview(conn, city=city, district=district)
+
+    # /api/districts  （「城市—区」列表，供首页区下拉）
+    if path == "/api/districts":
+        city = _first(qs, "city")
+        return 200, overview.list_districts(conn, city=city)
 
     # /api/xiaoqu  （列表 + 可选过滤）
     if path == "/api/xiaoqu":

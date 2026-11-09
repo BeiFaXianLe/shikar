@@ -21,7 +21,7 @@ import pytest
 
 from shikar import storage
 from shikar.api import create_server
-from shikar.overview import compute_overview
+from shikar.overview import compute_overview, list_districts
 from shikar.pipeline import ingest
 from shikar.sources.base import MetricRecord
 
@@ -258,3 +258,122 @@ def test_api_overview(live_server: dict) -> None:
         }
         assert isinstance(city["temperature"], float)
         assert city["count"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# compute_overview 过滤（city / district）
+# --------------------------------------------------------------------------- #
+def test_compute_overview_city_filter(conn: sqlite3.Connection) -> None:
+    """只传 city 时仅统计该城小区，榜单只含该城数据。"""
+    result = compute_overview(conn, city="北京")
+    assert [c["city"] for c in result["cities"]] == ["北京"]
+    beijing = result["cities"][0]
+    assert beijing["count"] == 2
+    names = {item["name"] for item in beijing["top_hot"]}
+    assert names == {"望京A", "中关村B"}
+
+
+def test_compute_overview_district_filter(conn: sqlite3.Connection) -> None:
+    """传 city + district 时只统计该区，count/均值/榜单均只含该区小区。"""
+    result = compute_overview(conn, city="北京", district="朝阳")
+    assert [c["city"] for c in result["cities"]] == ["北京"]
+    chaoyang = result["cities"][0]
+    assert chaoyang["count"] == 1
+    # 唯一小区的 name 出现在各榜单（mom4 非空的榜单也应有它）。
+    hot_names = [item["name"] for item in chaoyang["top_hot"]]
+    cold_names = [item["name"] for item in chaoyang["top_cold"]]
+    assert hot_names == ["望京A"]
+    assert cold_names == ["望京A"]
+    # 均值即该小区最新行 temperature（1 位小数）。
+    xiaoqu = storage.list_xiaoqu(conn, city="北京", district="朝阳")[0]
+    series = storage.get_metric_series(conn, xiaoqu["id"])
+    latest = [r for r in series if r["temperature"] is not None][-1]
+    assert chaoyang["temperature"] == round(latest["temperature"], 1)
+
+
+def test_compute_overview_district_only(conn: sqlite3.Connection) -> None:
+    """只传 district（不传 city）也能跨城收窄到该区。"""
+    result = compute_overview(conn, district="和平")
+    # 仅天津有「和平」区。
+    assert [c["city"] for c in result["cities"]] == ["天津"]
+    assert result["cities"][0]["count"] == 1
+
+
+def test_compute_overview_filter_no_match(conn: sqlite3.Connection) -> None:
+    """过滤到不存在的小区时返回空结构（week 为 None）。"""
+    result = compute_overview(conn, city="上海")
+    assert result == {"week": None, "cities": []}
+
+
+def test_compute_overview_no_filter_unchanged(conn: sqlite3.Connection) -> None:
+    """不传过滤参数时与显式传 None 的结构/数值一致（向后兼容）。"""
+    assert compute_overview(conn) == compute_overview(conn, city=None, district=None)
+
+
+# --------------------------------------------------------------------------- #
+# list_districts
+# --------------------------------------------------------------------------- #
+def test_list_districts_all(conn: sqlite3.Connection) -> None:
+    """返回去重、按 city、district 升序的「城市—区」对。"""
+    rows = list_districts(conn)
+    assert rows == [
+        {"city": "北京", "district": "朝阳"},
+        {"city": "北京", "district": "海淀"},
+        {"city": "天津", "district": "和平"},
+        {"city": "天津", "district": "河西"},
+    ]
+
+    # 每个 (city, district) 唯一，且整体有序。
+    pairs = [(r["city"], r["district"]) for r in rows]
+    assert pairs == sorted(pairs)
+    assert len(pairs) == len(set(pairs))
+
+
+def test_list_districts_by_city(conn: sqlite3.Connection) -> None:
+    """按 city 过滤只返回该城市的区。"""
+    rows = list_districts(conn, city="北京")
+    assert rows == [
+        {"city": "北京", "district": "朝阳"},
+        {"city": "北京", "district": "海淀"},
+    ]
+
+
+def test_list_districts_empty(empty_conn: sqlite3.Connection) -> None:
+    """空库返回空列表。"""
+    assert list_districts(empty_conn) == []
+    assert list_districts(empty_conn, city="北京") == []
+
+
+# --------------------------------------------------------------------------- #
+# HTTP 接口：/api/overview 过滤 + /api/districts
+# --------------------------------------------------------------------------- #
+def test_api_overview_filtered(live_server: dict) -> None:
+    """``GET /api/overview?city=&district=`` 返回 200 且只含该区数据。"""
+    status, headers, payload = _get_json(
+        live_server, "/api/overview?city=%E5%8C%97%E4%BA%AC&district=%E6%9C%9D%E9%98%B3"
+    )
+    assert status == 200
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert [c["city"] for c in payload["cities"]] == ["北京"]
+    assert payload["cities"][0]["count"] == 1
+    assert {item["name"] for item in payload["cities"][0]["top_hot"]} == {"望京A"}
+
+
+def test_api_districts(live_server: dict) -> None:
+    """``GET /api/districts`` 返回全部「城市—区」对，``?city=`` 可过滤。"""
+    status, headers, payload = _get_json(live_server, "/api/districts")
+    assert status == 200
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert payload == [
+        {"city": "北京", "district": "朝阳"},
+        {"city": "北京", "district": "海淀"},
+        {"city": "天津", "district": "和平"},
+        {"city": "天津", "district": "河西"},
+    ]
+
+    status2, _h2, payload2 = _get_json(live_server, "/api/districts?city=%E5%A4%A9%E6%B4%A5")
+    assert status2 == 200
+    assert payload2 == [
+        {"city": "天津", "district": "和平"},
+        {"city": "天津", "district": "河西"},
+    ]
