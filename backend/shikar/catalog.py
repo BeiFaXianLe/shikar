@@ -1,35 +1,40 @@
 """shikar 小区目录查询：为 ``GET /api/catalog`` 提供分页 + 过滤的纯函数。
 
-本模块在既有数据层 ``shikar.storage`` 之上提供唯一一个函数
-:func:`query_catalog`，供 ``api`` 层做参数解析后调用。它把「浏览 1.7 万小区」
-所需的筛选、搜索、分页与轻量聚合收拢在一处，避免 ``api`` 层拼 SQL。
+本模块在既有数据层 ``shikar.storage`` 与空间层 ``shikar.subway`` 之上提供唯一
+一个函数 :func:`query_catalog`，供 ``api`` 层做参数解析后调用。它把「浏览 1.7 万
+小区」所需的筛选、搜索、分页与轻量聚合收拢在一处，避免 ``api`` 层拼 SQL。
 
 设计原则（与 ``overview`` 一致）：
 
-* **仅用 Python 标准库**：只依赖 ``sqlite3`` / ``typing``，不引入第三方包；
-* **只读、无副作用**：只读 ``xiaoqu`` 与 ``xiaoqu_metric_weekly``，不写库、
-  不持有全局状态；
+* **仅用 Python 标准库**：只依赖 ``sqlite3`` / ``math`` / ``typing`` 与同项目的
+  ``subway`` 模块，不引入第三方包；
+* **只读、无副作用**：只读 ``xiaoqu``、``xiaoqu_metric_weekly`` 与地铁关系表，
+  不写库、不持有全局状态；
 * **纯函数风格**：输入连接与参数，输出可 JSON 序列化的普通字典，便于测试。
 
 过滤与分页规则：
 
-* ``city`` / ``district``：精确匹配（``=``）；``None`` 表示不限；
-* ``q``：小区名包含匹配（SQL ``LIKE %q%``），且**不区分大小写**（``LIKE`` 在
-  SQLite 中对 ASCII 默认大小写不敏感，此处再以 ``lower()`` 显式兜底）；
-* ``page`` 从 1 开始；``page`` < 1 视为 1，超过末页时返回空 ``items`` 但
-  仍给出正确 ``total``；
-* ``page_size`` 默认 50、上限 200；``page_size`` < 1 视为 1。
+* ``city`` / ``district`` 精确匹配；``q`` 名称包含匹配（大小写不敏感）；
+* ``price_min`` / ``price_max``：按**最新一期**（``week`` 最大）的 ``price``
+  过滤；``None`` 表示不限；区间左闭右闭；最小大于最大抛错；
+* ``lines``（线路 id 列表，多线取 OR）/ ``station``（指定站点）/ ``subway_max``
+  （阈值 km）/ ``subway_mode``（``station`` 距站 或 ``line`` 距线路走向）：由
+  ``subway.filter_sql`` 生成子查询，取小区交集；未导入地铁数据却要求地铁筛选
+  时抛出明确错误；
+* ``sort``：``default`` / ``price_asc`` / ``price_desc`` / ``subway_distance``；
+  一切排序都以 ``city,district,name,id`` 作为稳定次级顺序。
 
-每个条目给出：目录 id、城市、区、板块、小区名、数据期数、以及**最新一期**
-（``week`` 最大）的 ``price`` / ``week`` / ``mom4``。最新一期取该小区
-``week`` 字符串最大值的那一行（可能其 ``price`` 为空，此时 ``latest_price``
-为 ``None``，如实反映）。
+每个条目额外携带 ``features.subway``：命中条件下**距离最近的一条**线路信息
+（线路名、站名、距离、口径），未命中或无地铁数据时为 ``None``。
 """
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from typing import Optional
+
+from . import subway
 
 __all__ = ["query_catalog"]
 
@@ -39,24 +44,20 @@ _DEFAULT_PAGE_SIZE = 50
 #: ``page_size`` 上限。
 _MAX_PAGE_SIZE = 200
 
+#: 地铁查询阈值上限（km），与 ``subway.MAX_QUERY_RADIUS_KM`` 保持一致且更宽松
+#: 地留出「距线路」场景；超出视为非法参数。
+_MAX_SUBWAY_KM = 5.0
+
 
 def _clamp_page(page: Optional[int]) -> int:
-    """把 ``page`` 规整为 >= 1 的整数；``None`` 视为 1。
-
-    :param page: 原始页码（可能为 ``None``）。
-    :return: 规整后的页码（最小 1）。
-    """
+    """把 ``page`` 规整为 >= 1 的整数；``None`` 视为 1。"""
     if page is None:
         return 1
     return page if page >= 1 else 1
 
 
 def _clamp_page_size(page_size: Optional[int]) -> int:
-    """把 ``page_size`` 规整到 ``[1, 200]`` 区间；``None`` 取默认 50。
-
-    :param page_size: 原始每页条数（可能为 ``None``）。
-    :return: 规整后的每页条数。
-    """
+    """把 ``page_size`` 规整到 ``[1, 200]`` 区间；``None`` 取默认 50。"""
     if page_size is None:
         return _DEFAULT_PAGE_SIZE
     if page_size < 1:
@@ -69,24 +70,17 @@ def _clamp_page_size(page_size: Optional[int]) -> int:
 def _build_where(
     city: Optional[str], district: Optional[str], q: Optional[str]
 ) -> tuple[str, list]:
-    """拼出 ``WHERE`` 子句与参数（不含前导 ``WHERE``，条件以 ``AND`` 连接）。
-
-    :param city: 城市精确过滤；``None`` 不限。
-    :param district: 区精确过滤；``None`` 不限。
-    :param q: 小区名包含（不区分大小写）；``None`` 或空串不限。
-    :return: ``(" AND a = ? AND b LIKE ?", [...])`` 形式的子句与参数列表。
-    """
+    """拼出基础 ``WHERE`` 子句与参数（不含前导 ``WHERE``，条件以 ``AND`` 连接）。"""
     clauses: list[str] = []
     params: list = []
     if city is not None:
-        clauses.append("AND city = ?")
+        clauses.append("AND x.city = ?")
         params.append(city)
     if district is not None:
-        clauses.append("AND district = ?")
+        clauses.append("AND x.district = ?")
         params.append(district)
     if q is not None and q != "":
-        # 以 lower(name) LIKE lower(?) 显式不区分大小写；通配符按用户输入原样使用。
-        clauses.append("AND lower(name) LIKE lower(?)")
+        clauses.append("AND lower(x.name) LIKE lower(?)")
         params.append("%" + q + "%")
     return " ".join(clauses), params
 
@@ -98,20 +92,21 @@ def query_catalog(
     q: Optional[str] = None,
     page: Optional[int] = 1,
     page_size: Optional[int] = _DEFAULT_PAGE_SIZE,
+    *,
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
+    lines: Optional[list[str]] = None,
+    station: Optional[str] = None,
+    subway_mode: str = "station",
+    subway_max: Optional[float] = None,
+    sort: str = "default",
 ) -> dict:
-    """按城市 / 区 / 关键词过滤并分页查询小区目录。
+    """按城市 / 区 / 关键词 / 价格 / 地铁条件过滤并分页查询小区目录。
 
-    过滤条件全部可选；不传则返回全量（分页）。返回结构：
-
-    ``{"total", "page", "page_size", "items": [ {...}, ... ]}``
-
-    其中每个 ``items`` 元素含 ``id`` / ``city`` / ``district`` / ``plate`` /
-    ``name`` / ``data_points`` / ``latest_price`` / ``latest_week`` /
-    ``latest_mom``。
-
-    ``data_points`` 为该小区在 ``xiaoqu_metric_weekly`` 的行数；``latest_*``
-    取该小区 ``week`` 最大那一行的 ``price`` / ``week`` / ``mom4``（可能为
-    ``None``）。
+    返回结构 ``{"total", "page", "page_size", "items": [ {...}, ... ]}``；每个
+    ``items`` 元素含 ``id`` / ``city`` / ``district`` / ``plate`` / ``name`` /
+    ``data_points`` / ``latest_price`` / ``latest_week`` / ``latest_mom`` /
+    ``features``（``{"subway": {...}|None}``）。
 
     :param conn: 已打开的 SQLite 连接（只读使用）。
     :param city: 城市精确过滤；``None`` 不限。
@@ -119,34 +114,108 @@ def query_catalog(
     :param q: 小区名包含匹配（不区分大小写）；``None`` 或空串不限。
     :param page: 页码，从 1 开始；``None`` 或 < 1 视为 1。
     :param page_size: 每页条数，默认 50、上限 200；< 1 视为 1。
-    :return: 分页结果字典；空结果时 ``items`` 为 ``[]`` 且 ``total`` 正确。
+    :param price_min: 最新均价下限（元/㎡，含）；``None`` 不限。
+    :param price_max: 最新均价上限（元/㎡，含）；``None`` 不限。
+    :param lines: 选中地铁线路 id 列表（多线取 OR）；``None``/空 不限。
+    :param station: 指定站点 id；给出时仅按「距站」口径。
+    :param subway_mode: ``"station"``（距站）或 ``"line"``（距线路走向）。
+    :param subway_max: 地铁距离阈值（km）；给出即启用地铁筛选。
+    :param sort: 排序方式，见模块文档。
+    :return: 分页结果字典。
+    :raises ValueError: 价格/地铁阈值非法、口径或排序不支持、需要地铁筛选但
+        未导入地铁数据、线路/站点非法。
     """
+    for label, value in (
+        ("最低均价", price_min), ("最高均价", price_max), ("地铁距离", subway_max)
+    ):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError(f"{label}必须是有限非负数")
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise ValueError("最低均价不能超过最高均价")
+    if subway_max is not None and not 0 < subway_max <= _MAX_SUBWAY_KM:
+        raise ValueError(f"地铁距离必须大于 0 且不超过 {_MAX_SUBWAY_KM:g} km")
+    if subway_mode not in ("station", "line"):
+        raise ValueError("距离口径只能为 station/line")
+    if sort not in ("default", "price_asc", "price_desc", "subway_distance"):
+        raise ValueError("排序参数不支持")
+
     page_n = _clamp_page(page)
     size_n = _clamp_page_size(page_size)
     where_sql, params = _build_where(city, district, q)
 
+    # 最新一期价格：用同一 LEFT JOIN 供 total 与分页共用，绝不填充旧价格。
+    from_sql = (
+        " FROM xiaoqu x LEFT JOIN xiaoqu_metric_weekly m "
+        "ON m.xiaoqu_id=x.id AND m.week=("
+        "SELECT MAX(mm.week) FROM xiaoqu_metric_weekly mm WHERE mm.xiaoqu_id=x.id) "
+    )
+    if price_min is not None:
+        where_sql += " AND m.price >= ?"
+        params.append(price_min)
+    if price_max is not None:
+        where_sql += " AND m.price <= ?"
+        params.append(price_max)
+
+    # 地铁筛选：任一条件触发即启用；阈值缺省取默认 1 km（与前端默认一致）。
+    active_subway = bool(lines or station or subway_max is not None)
+    radius = subway_max if subway_max is not None else 1.0
+    if active_subway:
+        sub_sql, sub_params = subway.filter_sql(
+            conn, city=city, lines=lines, station=station,
+            mode=subway_mode, radius=radius,
+        )
+        where_sql += f" AND x.id IN ({sub_sql})"
+        params += sub_params
+
+    # 排序距离（用于 subway_distance 排序与次行展示）；无地铁表时置 NULL。
+    has_subway = subway.available(conn)
+    distance_sql = "NULL"
+    distance_params: list = []
+    if has_subway:
+        if station:
+            distance_sql = (
+                "(SELECT ds.distance_km FROM community_subway_station ds "
+                "WHERE ds.community_id=x.id AND ds.station_id=?)"
+            )
+            distance_params = [station]
+        else:
+            field = "station_distance_km" if subway_mode == "station" else "line_distance_km"
+            distance_sql = f"(SELECT MIN(cs.{field}) FROM community_subway cs WHERE cs.community_id=x.id"
+            if lines:
+                distance_sql += f" AND cs.line_id IN ({','.join('?' for _ in lines)})"
+                distance_params = list(lines)
+            distance_sql += ")"
+
+    stable = "x.city ASC, x.district ASC, x.name ASC, x.id ASC"
+    if sort == "price_asc":
+        order = "m.price IS NULL ASC, m.price ASC, " + stable
+    elif sort == "price_desc":
+        order = "m.price IS NULL ASC, m.price DESC, " + stable
+    elif sort == "subway_distance":
+        order = "sort_distance IS NULL ASC, sort_distance ASC, " + stable
+    else:
+        order = stable
+
     total_row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM xiaoqu WHERE 1 = 1 {where_sql}",
-        params,
+        f"SELECT COUNT(*) AS n {from_sql} WHERE 1 = 1 {where_sql}", params
     ).fetchone()
     total = int(total_row["n"]) if total_row is not None else 0
 
     offset = (page_n - 1) * size_n
     rows = conn.execute(
-        "SELECT id, city, district, plate, name FROM xiaoqu "
-        f"WHERE 1 = 1 {where_sql} "
-        "ORDER BY city ASC, district ASC, name ASC, id ASC "
-        "LIMIT ? OFFSET ?",
-        params + [size_n, offset],
+        f"SELECT x.id,x.city,x.district,x.plate,x.name,m.week,m.price,m.mom4,"
+        f"{distance_sql} AS sort_distance {from_sql} "
+        f"WHERE 1 = 1 {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
+        distance_params + params + [size_n, offset],
     ).fetchall()
 
+    row_ids = [r["id"] for r in rows]
+    features = subway.matching_features(
+        conn, row_ids, lines=lines, station=station, mode=subway_mode,
+        radius=radius if active_subway else None,
+    )
     items: list[dict] = []
     for row in rows:
-        latest = conn.execute(
-            "SELECT week, price, mom4 FROM xiaoqu_metric_weekly "
-            "WHERE xiaoqu_id = ? ORDER BY week DESC LIMIT 1",
-            (row["id"],),
-        ).fetchone()
         dp_row = conn.execute(
             "SELECT COUNT(*) AS n FROM xiaoqu_metric_weekly WHERE xiaoqu_id = ?",
             (row["id"],),
@@ -160,9 +229,10 @@ def query_catalog(
                 "plate": row["plate"],
                 "name": row["name"],
                 "data_points": data_points,
-                "latest_price": latest["price"] if latest is not None else None,
-                "latest_week": latest["week"] if latest is not None else None,
-                "latest_mom": latest["mom4"] if latest is not None else None,
+                "latest_price": row["price"],
+                "latest_week": row["week"],
+                "latest_mom": row["mom4"],
+                "features": {"subway": features.get(row["id"])},
             }
         )
 

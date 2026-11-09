@@ -19,14 +19,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sqlite3
 from typing import Optional
 
-from shikar import pipeline, storage
+from shikar import pipeline, storage, subway
 from shikar.api import create_server
 from shikar.sources.base import MetricRecord
 
-__all__ = ["seed_demo", "run"]
+__all__ = ["seed_demo", "ensure_subway", "run"]
 
 #: Demo 每小区周数。
 _DEMO_WEEKS = 10
@@ -96,6 +98,28 @@ def _is_empty(conn: sqlite3.Connection) -> bool:
     return bool(row[0] == 0)
 
 
+def ensure_subway(
+    conn: sqlite3.Connection, geojson_path: str, community_crs: str = "wgs84"
+) -> Optional[dict]:
+    """若尚未导入地铁关系表且 GeoJSON 存在，则在启动时离线构建一次。
+
+    仓储型数据库不提交体积巨大的地铁关系表（1.7 万小区 × 站点的预计算距离可达
+    上百 MB），改由本函数在本地启动时按需重建，保持「clone 后可重建」约定。
+
+    :param conn: 已打开的 SQLite 连接（读写）。
+    :param geojson_path: 适配套路后的地铁 GeoJSON 路径。
+    :param community_crs: 小区坐标的坐标系（须先核实，默认 ``wgs84``）。
+    :return: 导入统计字典；跳过（已有表）或文件缺失时返回 ``None``。
+    """
+    if subway.available(conn):
+        return None
+    if not geojson_path or not os.path.isfile(geojson_path):
+        return None
+    with open(geojson_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return subway.import_geojson(conn, payload, community_crs=community_crs)
+
+
 def run(argv: Optional[list[str]] = None) -> None:
     """启动本地服务：解析参数、打开数据库、按需播种、提供 API 与静态网页。
 
@@ -109,6 +133,17 @@ def run(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
     parser.add_argument("--web-root", default="web", help="静态文件根目录")
     parser.add_argument("--seed", action="store_true", help="库为空时播种 Demo 数据")
+    parser.add_argument(
+        "--subway-geojson",
+        default="data/subway/shikar-subway.json",
+        help="地铁 GeoJSON 路径；库中尚无地铁表时启动时自动导入（相对当前目录）",
+    )
+    parser.add_argument(
+        "--community-crs",
+        default="wgs84",
+        choices=["wgs84", "gcj02", "bd09"],
+        help="小区坐标的坐标系（须先核实；默认 wgs84）",
+    )
     args = parser.parse_args(argv)
 
     conn = sqlite3.connect(args.db, check_same_thread=False)
@@ -119,6 +154,13 @@ def run(argv: Optional[list[str]] = None) -> None:
     if args.seed and _is_empty(conn):
         stats = seed_demo(conn)
         print(f"已播种 Demo 数据：小区 {stats['xiaoqu']} 个，指标 {stats['metrics']} 行")
+
+    report = ensure_subway(conn, args.subway_geojson, community_crs=args.community_crs)
+    if report:
+        print(
+            "已导入地铁关系表：线路 {lines} 条、站点 {stations} 个、"
+            "有坐标小区 {communities_with_coordinates}（缺坐标 {communities_missing_coordinates}）".format(**report)
+        )
 
     server = create_server(conn, host=args.host, port=args.port, web_root=args.web_root)
     host, port = server.server_address[0], server.server_address[1]
