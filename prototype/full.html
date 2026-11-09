@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>shikar · 按生活半径找小区 · 完整原型</title><link rel="stylesheet" href="full.css"></head>
+<body>
+<header><div class="mast"><a href="#find" class="brand">shikar<span>京津居住观察</span></a><span class="edition">LIVING ATLAS / 居住年鉴</span><span class="demo-badge">交互原型 · 模拟数据</span></div><nav aria-label="主菜单"><a href="#find" data-view="find">找小区</a><a href="#schools" data-view="schools">学校</a><a href="#hospitals" data-view="hospitals">医院</a><a href="#hsr" data-view="hsr">高铁站</a><a href="#commute" data-view="commute">双点通勤</a></nav></header>
+<main id="main"></main>
+<footer>shikar · 居住年鉴<span>名称、价格、距离、设施属性、通勤时间均为模拟值。附近学校不代表对口入学。</span></footer>
+<dialog id="drawer" class="drawer" aria-labelledby="drawer-title"><div class="drawer-shell"><div class="drawer-head"><div><span class="eyebrow">YOUR PREFERENCES</span><h2 id="drawer-title">把偏好，再细化一点。</h2></div><button id="close-drawer" class="icon-button" aria-label="关闭筛选">×</button></div><form id="drawer-form"><div id="drawer-content" class="drawer-content"></div><div id="drawer-error" class="form-error" role="alert"></div><div class="drawer-footer"><button type="button" id="reset-draft" class="button">重置条件</button><button type="button" id="cancel-drawer" class="button">取消</button><button type="submit" class="button primary">应用条件</button></div></form></div></dialog>
+<script src="full.js"></script>
+</body></html>
