@@ -422,7 +422,7 @@
         appEl.appendChild(head);
 
         if (cities.length === 0) {
-          appEl.appendChild(stateNode("empty", "暂无数据。请确认后端已播种数据（--seed）。"));
+          appEl.appendChild(stateNode("empty", "暂无足够数据：温度与趋势需要每个小区至少 3 期可比历史（当前数据多为 1–2 期）。请点开具体小区查看原始读数；历史会随每周快照逐步积累。"));
           return;
         }
 
