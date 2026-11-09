@@ -5,7 +5,8 @@
  *   小区详情  #/xiaoqu/<id>
  *
  * 数据来源（相对路径的同源 API）：
- *   GET /api/overview
+ *   GET /api/overview?city=&district=   （首页总览，可按区筛选）
+ *   GET /api/districts?city=            （首页各区下拉数据）
  *   GET /api/xiaoqu/{id}
  *   GET /api/xiaoqu/{id}/series
  *   GET /api/xiaoqu/{id}/signals
@@ -133,6 +134,17 @@
       ]);
     }
     return el("div", { class: kind, text: text });
+  }
+
+  /** 查询串拼接：把 {a:"北京", b:null} 拼成「?a=%E5%8C%97%E4%BA%AC」，空值跳过。 */
+  function buildQuery(params) {
+    var parts = [];
+    Object.keys(params || {}).forEach(function (k) {
+      var v = params[k];
+      if (v === null || v === undefined || v === "") return;
+      parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v));
+    });
+    return parts.length ? "?" + parts.join("&") : "";
   }
 
   /** 通用 JSON 请求，失败抛出带可读信息的错误。 */
@@ -380,6 +392,16 @@
   // -------------------------------------------------------------------------
   // 首页
   // -------------------------------------------------------------------------
+  /** 拉取某城市的区列表，返回 Promise<[{city, district}]>；失败降级为空数组。 */
+  function fetchDistricts(city) {
+    if (!city) return Promise.resolve([]);
+    return getJSON("/api/districts" + buildQuery({ city: city }))
+      .then(function (rows) {
+        return Array.isArray(rows) ? rows : [];
+      })
+      .catch(function () { return []; });
+  }
+
   function renderOverview() {
     appEl.innerHTML = "";
     appEl.appendChild(stateNode("loading", "正在加载总览…"));
@@ -407,6 +429,19 @@
         var grid = el("div", { class: "city-grid" });
         cities.forEach(function (city) { grid.appendChild(cityCard(city)); });
         appEl.appendChild(grid);
+
+        // 区列表并行拉取；每个城市卡片各自填充下拉、互不影响。
+        cities.forEach(function (city) {
+          var host = grid.querySelector(
+            '[data-city-card="' + cssAttr(city.city) + '"]'
+          );
+          if (!host) return;
+          var cardApi = host.__cardApi;
+          if (!cardApi) return;
+          fetchDistricts(city.city).then(function (rows) {
+            cardApi.setDistricts(rows.map(function (r) { return r.district; }));
+          });
+        });
       })
       .catch(function (err) {
         weekEl.textContent = "";
@@ -415,9 +450,16 @@
       });
   }
 
+  /** CSS 属性选择器转义（用于按城市名定位卡片）。 */
+  function cssAttr(value) {
+    return String(value == null ? "" : value).replace(/["\\]/g, "\\$&");
+  }
+
   function cityCard(city) {
-    var temp = city.temperature;
-    var card = el("article", { class: "city-card" });
+    var card = el("article", {
+      class: "city-card",
+      "data-city-card": city.city || "",
+    });
 
     card.appendChild(
       el("div", { class: "city-head" }, [
@@ -429,28 +471,98 @@
       ])
     );
 
-    // 温度仪表 + 大数字
-    var numColor = tempColor(temp);
-    var gaugeWrap = el("div", { class: "gauge-wrap" }, [
-      el("div", { class: "gauge" }, [tempGauge(temp)]),
-      el("div", { class: "gauge-temp" }, [
-        el("div", { class: "num", style: "color:" + numColor }, [
-          document.createTextNode(fmtNum(temp, 1)),
-          el("span", { class: "unit", text: " °C 温度" }),
-        ]),
-        el("div", { class: "label", text: "0–100 温度（蓝→红）" }),
-      ]),
+    // 区下拉：初始只有「全部」，区列表异步填充后启用。
+    var select = el("select", { class: "district-select", disabled: "disabled" }, [
+      el("option", { value: "", text: "全部" }),
     ]);
-    card.appendChild(gaugeWrap);
+    card.appendChild(
+      el("div", { class: "city-filter" }, [
+        el("label", { text: "区域" }),
+        select,
+      ])
+    );
 
-    // 四个榜单
-    var boards = el("div", { class: "boards" }, [
-      board("最热", "hot", city.top_hot),
-      board("最冷", "cold", city.top_cold),
-      board("升温最快", "rising", city.top_rising),
-      board("降温最快", "falling", city.top_falling),
-    ]);
-    card.appendChild(boards);
+    // 一个卡片可整体重绘正文，但保留城市名与下拉（避免闪烁、保持选择）。
+    var body = el("div", { class: "city-body" });
+    card.appendChild(body);
+
+    function paint(data) {
+      body.innerHTML = "";
+      var t = data.temperature;
+      var numColor = tempColor(t);
+      body.appendChild(
+        el("div", { class: "gauge-wrap" }, [
+          el("div", { class: "gauge" }, [tempGauge(t)]),
+          el("div", { class: "gauge-temp" }, [
+            el("div", { class: "num", style: "color:" + numColor }, [
+              document.createTextNode(fmtNum(t, 1)),
+              el("span", { class: "unit", text: " °C 温度" }),
+            ]),
+            el("div", {
+              class: "label",
+              text: "0–100 温度（蓝→红）" + (data.districtLabel ? " · " + data.districtLabel : ""),
+            }),
+          ]),
+        ])
+      );
+      body.appendChild(
+        el("div", { class: "boards" }, [
+          board("最热", "hot", data.top_hot),
+          board("最冷", "cold", data.top_cold),
+          board("升温最快", "rising", data.top_rising),
+          board("降温最快", "falling", data.top_falling),
+        ])
+      );
+      // 同步小区数（筛选后可能变化）。
+      var cityCount = card.querySelector(".city-count b");
+      if (cityCount) cityCount.textContent = String(data.count == null ? 0 : data.count);
+    }
+
+    // 用整体概览中该城市的切片作初值（不传区时即「全市」）。
+    paint(city);
+
+    select.addEventListener("change", function () {
+      var district = select.value;
+      select.disabled = true;
+      // 以 /api/overview?city=&district= 重新拉取本城市该区数据。
+      getJSON("/api/overview" + buildQuery({ city: city.city, district: district }))
+        .then(function (resp) {
+          var cities = (resp && resp.cities) || [];
+          // 过滤后该城市应有唯一一条聚合；无数据时给出空态切片。
+          var slice =
+            cities[0] && cities[0].city
+              ? cities[0]
+              : {
+                  city: city.city,
+                  temperature: null,
+                  count: 0,
+                  top_hot: [],
+                  top_cold: [],
+                  top_rising: [],
+                  top_falling: [],
+                };
+          slice.districtLabel = district ? "区：" + district : "";
+          paint(slice);
+        })
+        .catch(function (err) {
+          body.innerHTML = "";
+          body.appendChild(stateNode("error", "筛选失败：" + err.message));
+        })
+        .then(function () {
+          select.disabled = false;
+        });
+    });
+
+    // 暴露给 renderOverview 用于异步填充区列表。
+    card.__cardApi = {
+      setDistricts: function (districts) {
+        districts.forEach(function (d) {
+          if (!d) return;
+          select.appendChild(el("option", { value: d, text: d }));
+        });
+        select.disabled = districts.length === 0;
+      },
+    };
     return card;
   }
 

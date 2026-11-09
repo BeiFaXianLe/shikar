@@ -178,6 +178,40 @@ a:hover { text-decoration: underline; }
 }
 .city-count b { color: var(--text); font-family: var(--mono); font-size: 15px; }
 
+/* 区筛选下拉 */
+.city-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.city-filter label {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* 原生 select 外观归一，用 CSS 三角箭头（无外链资源）。 */
+.city-filter select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-color: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.4;
+  padding: 6px 10px 6px 10px;
+  cursor: pointer;
+  min-width: 120px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.city-filter select:hover { border-color: var(--accent); background-color: var(--bg-card-hover); }
+.city-filter select:focus { outline: none; border-color: var(--accent); }
+.city-filter select:disabled { opacity: 0.55; cursor: default; }
+.city-filter select option { background: var(--bg-card); color: var(--text); }
+
 /* 温度仪表 */
 .gauge-wrap {
   display: flex;

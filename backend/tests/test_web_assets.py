@@ -56,6 +56,17 @@ def test_app_js_references_api() -> None:
     assert "/api/xiaoqu/" in js, "app.js 未引用 /api/xiaoqu/"
 
 
+def test_app_js_district_filter() -> None:
+    """``app.js`` 必须实现按区筛选：引用 /api/districts 与 district 查询。"""
+    js = _read("app.js")
+    assert "/api/districts" in js, "app.js 未引用 /api/districts"
+    assert "district" in js, "app.js 未包含 district 过滤逻辑"
+    # 筛选后的总览应带上 district 查询参数（buildQuery 拼接 district）。
+    assert '"district"' in js or "'district'" in js or "district:" in js, (
+        "app.js 未把 district 作为查询参数传给 /api/overview"
+    )
+
+
 def test_index_html_links_assets() -> None:
     """``index.html`` 应通过相对路径引用本站样式与脚本。"""
     html = _read("index.html")
