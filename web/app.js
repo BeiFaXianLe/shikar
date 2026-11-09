@@ -646,11 +646,16 @@
   }
 
   function renderDetailHead(detail, series) {
-    var temp = latestValid(series, "temperature");
-    var stage = series.length ? series[series.length - 1].stage : null;
-    if (stage === null || stage === undefined) {
-      for (var i = series.length - 1; i >= 0; i--) {
-        if (series[i].stage) { stage = series[i].stage; break; }
+    var dp = series ? series.length : 0;
+    var sufficient = dp >= 2; // 少于 2 期不给温度/阶段，避免过度解读
+    var temp = sufficient ? latestValid(series, "temperature") : null;
+    var stage = null;
+    if (sufficient) {
+      stage = series[series.length - 1].stage;
+      if (stage === null || stage === undefined) {
+        for (var i = series.length - 1; i >= 0; i--) {
+          if (series[i].stage) { stage = series[i].stage; break; }
+        }
       }
     }
     var loc = [detail.district, detail.plate].filter(Boolean).join(" · ");
@@ -664,40 +669,76 @@
       ])
     );
 
-    var metrics = el("div", { class: "detail-metrics" }, [
-      el("div", { class: "metric" }, [
+    var metrics = el("div", { class: "detail-metrics" });
+    if (temp !== null && temp !== undefined) {
+      metrics.appendChild(el("div", { class: "metric" }, [
         el("span", { class: "k", text: "最新温度" }),
         el("span", { class: "v", style: "color:" + tempColor(temp) }, [
           document.createTextNode(fmtNum(temp, 1)),
           el("span", { class: "unit", text: " °C" }),
         ]),
+      ]));
+    }
+    metrics.appendChild(el("div", { class: "metric" }, [
+      el("span", { class: "k", text: "最新价格" }),
+      el("span", { class: "v" }, [
+        document.createTextNode(fmtNum(latestValid(series, "price"), 0)),
+        el("span", { class: "unit", text: " 元/㎡" }),
       ]),
-      el("div", { class: "metric" }, [
-        el("span", { class: "k", text: "最新价格" }),
-        el("span", { class: "v" }, [
-          document.createTextNode(fmtNum(latestValid(series, "price"), 0)),
-          el("span", { class: "unit", text: " 元/㎡" }),
-        ]),
+    ]));
+    metrics.appendChild(el("div", { class: "metric" }, [
+      el("span", { class: "k", text: "数据期数" }),
+      el("span", { class: "v", style: "font-size:22px" }, [
+        document.createTextNode(String(dp)),
+        el("span", { class: "unit", text: " 期" }),
       ]),
-      detail.city
-        ? el("div", { class: "metric" }, [
-            el("span", { class: "k", text: "城市" }),
-            el("span", { class: "v", style: "font-size:20px" }, [document.createTextNode(detail.city)]),
-          ])
-        : null,
-    ]);
+    ]));
+    if (detail.city) {
+      metrics.appendChild(el("div", { class: "metric" }, [
+        el("span", { class: "k", text: "城市" }),
+        el("span", { class: "v", style: "font-size:20px" }, [document.createTextNode(detail.city)]),
+      ]));
+    }
     head.appendChild(metrics);
     return head;
   }
 
+  function readoutItem(k, v, unit) {
+    var val = el("span", { class: "rv" }, [document.createTextNode(v)]);
+    if (unit) val.appendChild(el("span", { class: "ru", text: unit }));
+    return el("div", { class: "readout-item" }, [el("span", { class: "rk", text: k }), val]);
+  }
+
   function renderSeriesSection(series) {
     var section = el("section", { class: "section" });
-    section.appendChild(el("h2", { text: "走势曲线" }));
+    var dp = series ? series.length : 0;
 
     if (!series || series.length === 0) {
+      section.appendChild(el("h2", { text: "数据读数" }));
       section.appendChild(el("div", { class: "chart-empty", text: "暂无数据" }));
       return section;
     }
+
+    // 数据不足（少于 2 期）：不画折线，直接给读数，避免空洞与过度解读。
+    if (dp < 2) {
+      var r = series[series.length - 1];
+      section.appendChild(el("h2", { text: "数据读数" }));
+      var mom = (r.mom4 !== null && r.mom4 !== undefined)
+        ? fmtSigned(Number(r.mom4) * 100, 2) + "%" : "—";
+      section.appendChild(el("div", { class: "readout" }, [
+        readoutItem("参考均价", fmtNum(r.price, 0), " 元/㎡"),
+        readoutItem("近月环比", mom, ""),
+        readoutItem("在售套数", r.supply == null ? "—" : String(r.supply), " 套"),
+        readoutItem("数据周", r.week || "—", ""),
+      ]));
+      section.appendChild(el("p", {
+        class: "readout-note",
+        text: "数据不足（仅 " + dp + " 期），以上仅为读数，暂不给出温度与趋势判断。",
+      }));
+      return section;
+    }
+
+    section.appendChild(el("h2", { text: "走势曲线" }));
 
     var tempPoints = series.map(function (r) { return { week: r.week, value: r.temperature }; });
     var pricePoints = series.map(function (r) { return { week: r.week, value: r.price }; });

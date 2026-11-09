@@ -224,6 +224,14 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
 .chart svg { display: block; width: 100%; height: auto; }
 .chart-empty { color: var(--ink-faint); text-align: center; padding: 34px; font-size: 14px; }
 
+/* 稀疏数据：读数卡（不画折线） */
+.readout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 36px; border-top: 1px solid var(--rule-soft); }
+.readout-item { display: flex; flex-direction: column; gap: 4px; padding: 15px 2px; border-bottom: 1px dotted var(--rule); }
+.readout-item .rk { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; }
+.readout-item .rv { font-family: var(--serif); font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: lining-nums tabular-nums; }
+.readout-item .ru { font-size: 12.5px; color: var(--ink-soft); font-family: var(--sans); font-weight: 500; margin-left: 2px; }
+.readout-note { margin: 16px 0 0; font-size: 13px; color: var(--ink-soft); border-left: 2px solid var(--hot); padding-left: 10px; line-height: 1.6; }
+
 /* 信号 */
 .signals { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .signal { display: flex; gap: 16px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px dotted var(--rule); }
