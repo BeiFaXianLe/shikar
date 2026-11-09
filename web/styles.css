@@ -1,0 +1,395 @@
+/* shikar 前端样式 —— 纯原生 CSS，零依赖、无外链。 */
+
+:root {
+  --bg: #0f1216;
+  --bg-soft: #161b22;
+  --bg-card: #1b2129;
+  --bg-card-hover: #212a34;
+  --border: #2a3341;
+  --border-soft: #222a34;
+  --text: #e6edf3;
+  --text-dim: #9aa7b4;
+  --text-faint: #66717d;
+  --accent: #4fa3ff;
+  --hot: #ff5a5a;
+  --cold: #4f9dff;
+  --rising: #ff8a3d;
+  --falling: #3db6a0;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  --font: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(79, 163, 255, 0.10), transparent 60%),
+    radial-gradient(900px 500px at 0% 110%, rgba(255, 90, 90, 0.06), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(15, 18, 22, 0.82);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-soft);
+}
+.topbar-inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.brand {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text);
+}
+.brand:hover { text-decoration: none; color: var(--accent); }
+.week {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* ---------- 主容器 ---------- */
+.app {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 26px 20px 40px;
+}
+
+.footer {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 18px 20px 26px;
+  color: var(--text-faint);
+  font-size: 13px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+}
+
+/* ---------- 通用状态 ---------- */
+.loading,
+.empty,
+.error {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+.error { color: #ff8f8f; }
+.notice {
+  background: rgba(255, 90, 90, 0.08);
+  border: 1px solid rgba(255, 90, 90, 0.3);
+  color: #ffb3b3;
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin: 8px 0 18px;
+  font-size: 14px;
+}
+.spinner {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 10px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 首页：城市卡片 ---------- */
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 20px;
+  flex-wrap: wrap;
+}
+.page-head h1 {
+  font-size: 22px;
+  margin: 0;
+  font-weight: 700;
+}
+.page-head .sub { color: var(--text-dim); font-size: 13px; }
+
+.city-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+
+.city-card {
+  background: linear-gradient(180deg, var(--bg-card), var(--bg-soft));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.city-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.city-name { font-size: 20px; font-weight: 700; }
+.city-count {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.city-count b { color: var(--text); font-family: var(--mono); font-size: 15px; }
+
+/* 温度仪表 */
+.gauge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.gauge {
+  width: 150px;
+  height: 92px;
+  flex-shrink: 0;
+}
+.gauge svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.gauge-temp {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gauge-temp .num {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  font-family: var(--mono);
+  letter-spacing: -1px;
+}
+.gauge-temp .unit { font-size: 14px; color: var(--text-dim); font-weight: 500; }
+.gauge-temp .label { font-size: 12px; color: var(--text-faint); }
+
+/* 榜单 */
+.boards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.board {
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.board-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.board-title .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot-hot { background: var(--hot); }
+.dot-cold { background: var(--cold); }
+.dot-rising { background: var(--rising); }
+.dot-falling { background: var(--falling); }
+
+.board-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.board-item a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13.5px;
+  min-width: 0;
+}
+.board-item a:hover { background: var(--bg-card-hover); text-decoration: none; }
+.board-item .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.board-item .name .district { color: var(--text-faint); font-size: 12px; }
+.board-item .meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.board-item .temp {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+.board-empty { color: var(--text-faint); font-size: 12.5px; padding: 4px 6px; }
+
+/* ---------- 阶段徽章 ---------- */
+.badge {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge.stage-bingdian { background: rgba(79, 157, 255, 0.18); color: #8fc0ff; border-color: rgba(79, 157, 255, 0.35); }
+.badge.stage-huinuan  { background: rgba(61, 182, 160, 0.16); color: #6fdcc6; border-color: rgba(61, 182, 160, 0.32); }
+.badge.stage-wenhe    { background: rgba(154, 167, 180, 0.16); color: #c3ccd6; border-color: rgba(154, 167, 180, 0.30); }
+.badge.stage-shengwen { background: rgba(255, 138, 61, 0.16); color: #ffb27a; border-color: rgba(255, 138, 61, 0.34); }
+.badge.stage-guore    { background: rgba(255, 90, 90, 0.18); color: #ff9c9c; border-color: rgba(255, 90, 90, 0.36); }
+.badge.stage-jiangwen { background: rgba(120, 150, 190, 0.18); color: #a9c1dd; border-color: rgba(120, 150, 190, 0.34); }
+.badge.stage-xiaxing  { background: rgba(110, 120, 200, 0.18); color: #a7afe6; border-color: rgba(110, 120, 200, 0.34); }
+.badge.stage-unknown  { background: rgba(154, 167, 180, 0.12); color: var(--text-dim); border-color: var(--border); }
+
+/* ---------- 详情页 ---------- */
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-dim);
+  margin-bottom: 18px;
+}
+.back:hover { color: var(--accent); text-decoration: none; }
+
+.detail-head {
+  background: linear-gradient(180deg, var(--bg-card), var(--bg-soft));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px 24px;
+  margin-bottom: 22px;
+}
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.detail-title { font-size: 26px; font-weight: 800; margin: 0; }
+.detail-loc { color: var(--text-dim); font-size: 14px; }
+.detail-metrics {
+  display: flex;
+  gap: 30px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.metric { display: flex; flex-direction: column; gap: 2px; }
+.metric .k { font-size: 12px; color: var(--text-faint); }
+.metric .v { font-size: 26px; font-weight: 800; font-family: var(--mono); line-height: 1.1; }
+.metric .v .unit { font-size: 13px; color: var(--text-dim); font-weight: 500; font-family: var(--font); }
+
+.section {
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 18px 20px 20px;
+  margin-bottom: 20px;
+}
+.section h2 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 14px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chart {
+  width: 100%;
+}
+.chart svg { display: block; width: 100%; height: auto; }
+.chart-empty { color: var(--text-faint); text-align: center; padding: 30px; font-size: 14px; }
+
+/* 信号列表 */
+.signals { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.signal {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.signal .date {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  min-width: 88px;
+  padding-top: 2px;
+}
+.signal .body { min-width: 0; flex: 1; }
+.signal .type { font-weight: 700; font-size: 14px; }
+.signal .reason { color: var(--text-dim); font-size: 13px; margin-top: 3px; word-break: break-word; }
+.signals-empty { color: var(--text-faint); text-align: center; padding: 24px; font-size: 14px; }
+
+/* ---------- 响应式：窄屏单列 ---------- */
+@media (max-width: 820px) {
+  .city-grid { grid-template-columns: 1fr; }
+  .boards { grid-template-columns: 1fr; }
+  .app { padding: 18px 14px 32px; }
+  .topbar-inner { padding: 12px 14px; }
+  .brand { font-size: 17px; }
+  .detail-title { font-size: 22px; }
+  .detail-metrics { gap: 22px; }
+  .gauge-wrap { gap: 14px; }
+  .gauge { width: 128px; height: 80px; }
+}
+
+@media (max-width: 420px) {
+  .week { display: none; }
+  .board-item .name .district { display: none; }
+}
