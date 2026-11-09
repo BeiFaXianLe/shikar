@@ -95,6 +95,7 @@ def query_catalog(
     *,
     price_min: Optional[float] = None,
     price_max: Optional[float] = None,
+    price_week: Optional[str] = None,
     lines: Optional[list[str]] = None,
     station: Optional[str] = None,
     subway_mode: str = "station",
@@ -103,10 +104,16 @@ def query_catalog(
 ) -> dict:
     """按城市 / 区 / 关键词 / 价格 / 地铁条件过滤并分页查询小区目录。
 
-    返回结构 ``{"total", "page", "page_size", "items": [ {...}, ... ]}``；每个
-    ``items`` 元素含 ``id`` / ``city`` / ``district`` / ``plate`` / ``name`` /
+    返回结构 ``{"total", "page", "page_size", "price_periods", "items": [ ... ]}``；
+    每个 ``items`` 元素含 ``id`` / ``city`` / ``district`` / ``plate`` / ``name`` /
     ``data_points`` / ``latest_price`` / ``latest_week`` / ``latest_mom`` /
     ``features``（``{"subway": {...}|None}``）。
+
+    价格期次口径（P1-03）：价格一律取各小区**最新一期**的 ``price``，且每条结果都带
+    ``latest_week``（期次）；``price_is_current`` 标记该期次是否为全库最新一期。
+    ``price_week`` 非空时，只统计/返回「最新一期恰为该期次」的小区，使价格过滤与排序
+    在同一期次内比较，避免 2019 与 2026 混比。``price_periods`` 返回库中出现的期次
+    及各自小区数，供前端展示「历史价」分组与期次选择。
 
     :param conn: 已打开的 SQLite 连接（只读使用）。
     :param city: 城市精确过滤；``None`` 不限。
@@ -116,6 +123,7 @@ def query_catalog(
     :param page_size: 每页条数，默认 50、上限 200；< 1 视为 1。
     :param price_min: 最新均价下限（元/㎡，含）；``None`` 不限。
     :param price_max: 最新均价上限（元/㎡，含）；``None`` 不限。
+    :param price_week: 限定价格期次（如 ``2026-W46``）；``None`` 不限（跨期，结果标注期次）。
     :param lines: 选中地铁线路 id 列表（多线取 OR）；``None``/空 不限。
     :param station: 指定站点 id；给出时仅按「距站」口径。
     :param subway_mode: ``"station"``（距站）或 ``"line"``（距线路走向）。
@@ -155,6 +163,10 @@ def query_catalog(
     if price_max is not None:
         where_sql += " AND m.price <= ?"
         params.append(price_max)
+    # 期次限定：只取最新一期恰为该期次的小区，确保价格过滤/排序在同一期次内比较。
+    if price_week is not None and price_week != "":
+        where_sql += " AND m.week = ?"
+        params.append(price_week)
 
     # 地铁筛选：任一条件触发即启用；阈值缺省取默认 1 km（与前端默认一致）。
     active_subway = bool(lines or station or subway_max is not None)
@@ -214,6 +226,17 @@ def query_catalog(
         conn, row_ids, lines=lines, station=station, mode=subway_mode,
         radius=radius if active_subway else None,
     )
+    # 全库最新期次（用于标记「当前价」vs「历史价」）。
+    max_week_row = conn.execute("SELECT MAX(week) AS w FROM xiaoqu_metric_weekly").fetchone()
+    max_week = max_week_row["w"] if max_week_row is not None else None
+    # 库中期次分布（期次 → 该期次为最新一期的小区数），供前端展示/选择期次。
+    period_rows = conn.execute(
+        "SELECT m.week AS week, COUNT(*) AS n FROM xiaoqu x JOIN xiaoqu_metric_weekly m "
+        "ON m.xiaoqu_id=x.id AND m.week=("
+        "SELECT MAX(mm.week) FROM xiaoqu_metric_weekly mm WHERE mm.xiaoqu_id=x.id) "
+        "GROUP BY m.week ORDER BY m.week DESC"
+    ).fetchall()
+    price_periods = [{"week": r["week"], "communities": int(r["n"])} for r in period_rows]
     items: list[dict] = []
     for row in rows:
         dp_row = conn.execute(
@@ -232,6 +255,7 @@ def query_catalog(
                 "latest_price": row["price"],
                 "latest_week": row["week"],
                 "latest_mom": row["mom4"],
+                "price_is_current": row["week"] == max_week,
                 "features": {"subway": features.get(row["id"])},
             }
         )
@@ -240,5 +264,6 @@ def query_catalog(
         "total": total,
         "page": page_n,
         "page_size": size_n,
+        "price_periods": price_periods,
         "items": items,
     }

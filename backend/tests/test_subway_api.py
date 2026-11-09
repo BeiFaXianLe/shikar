@@ -128,3 +128,73 @@ def test_catalog_regression_plain(server_with_subway):
     assert status == 200
     assert payload["total"] == 2
     assert all("features" in it for it in payload["items"])
+
+
+# --------------------------------------------------------------------------- #
+# P2-01：非法数字参数必须 400（不能静默忽略）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("param", ["price_min", "price_max", "subway_max"])
+def test_catalog_invalid_number_returns_400(server_with_subway, param):
+    status, payload = _get(server_with_subway, f"/api/catalog?{param}=abc")
+    assert status == 400
+    assert "error" in payload
+
+
+# --------------------------------------------------------------------------- #
+# P2-02：未支持的 POI 参数必须明确 400，不静默返回全部
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("param", ["stage=primary", "school_max=2", "grade=%E4%B8%89%E7%94%B2", "hospital_max=3", "hsr_max=5"])
+def test_catalog_unsupported_poi_param_returns_400(server_with_subway, param):
+    status, payload = _get(server_with_subway, f"/api/catalog?{param}")
+    assert status == 400
+    assert "不支持" in payload["error"]
+
+
+# --------------------------------------------------------------------------- #
+# P1-03：价格期次口径 —— 每条带期次与当前/历史标记，可按期次限定
+# --------------------------------------------------------------------------- #
+def _conn_periods() -> sqlite3.Connection:
+    """两个小区：x_cur 最新为 2026-W46，x_old 最新为 2019-02。"""
+    c = sqlite3.connect(":memory:", check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys=ON")
+    init_db(c)
+    for xid, price, week in [("x_cur", 90000.0, "2026-W46"), ("x_old", 30000.0, "2019-02")]:
+        upsert_xiaoqu(c, {"id": xid, "name": xid, "city": "北京", "district": "海淀",
+                          "plate": "p", "alias": None, "lng": None, "lat": None,
+                          "build_year": None, "households": None})
+        upsert_metric(c, {"xiaoqu_id": xid, "week": week, "price": price, "mom4": None,
+                          "mom13": None, "supply": None, "vol30": None, "absorb": None,
+                          "bargain": None, "heat": None, "temperature": None, "stage": None})
+    return c
+
+
+@pytest.fixture()
+def server_periods() -> Iterator[dict]:
+    c = _conn_periods()
+    server = create_server(c, host="127.0.0.1", port=0)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield {"host": server.server_address[0], "port": server.server_address[1]}
+    finally:
+        server.shutdown(); server.server_close(); t.join(timeout=5); c.close()
+
+
+def test_catalog_price_period_flags(server_periods):
+    status, payload = _get(server_periods, "/api/catalog")
+    assert status == 200
+    items = {it["id"]: it for it in payload["items"]}
+    assert items["x_cur"]["price_is_current"] is True
+    assert items["x_old"]["price_is_current"] is False
+    assert items["x_old"]["latest_week"] == "2019-02"
+    # 期次分布包含两期。
+    weeks = {p["week"] for p in payload["price_periods"]}
+    assert {"2026-W46", "2019-02"} <= weeks
+
+
+def test_catalog_price_week_restricts_to_period(server_periods):
+    # 限定 2026-W46：只返回当期小区，价格过滤不再与 2019 混比。
+    status, payload = _get(server_periods, "/api/catalog?price_week=2026-W46")
+    assert status == 200
+    assert [it["id"] for it in payload["items"]] == ["x_cur"]

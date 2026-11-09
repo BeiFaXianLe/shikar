@@ -513,4 +513,3 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
   .fc-chip, .fc-clear { flex-shrink: 0; }
   .fd-checks { grid-template-columns: 1fr; }
 }
-

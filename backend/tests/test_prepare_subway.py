@@ -1,8 +1,9 @@
-"""``scripts/prepare_subway_geojson.py`` 适配层测试（不联网，用临时小样本）。
+"""``scripts/prepare_subway_geojson.py`` 适配层测试（不联网）。
 
 验证：把「站点/线路原始 GeoJSON」适配为 shikar 导入格式——线路 feature 带
-``id``/``city``/``name``，站点 feature 按坐标合并换乘站并汇总 ``line_ids``，
+``id``/``city``/``name``，站点按**到线路折线的距离**归属线路（含换乘站的多线路），
 输出显式 ``coord_system: wgs84``，且可被 ``subway.import_geojson`` 直接导入。
+含真实换乘站回归（P1-01）与启动导入测试（P1-02）。
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import importlib.util
 import json
 import os
 import sqlite3
+
+import pytest
 
 from shikar import storage, subway
 
@@ -113,3 +116,83 @@ def _write(path, obj):
     import json as _json
     path.write_text(_json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+# --------------------------------------------------------------------------- #
+# P1-01 真实换乘站回归：提交的 data/subway/shikar-subway.json 必须保留换乘关系
+# --------------------------------------------------------------------------- #
+def test_real_transfer_relationships_preserved():
+    """真实数据里西直门=4/13/2、国贸=10/1、望京=14/15、天津站=2/3/9 等换乘要保留。"""
+    path = os.path.join(_REPO_ROOT, "data", "subway", "shikar-subway.json")
+    if not os.path.isfile(path):
+        import pytest
+        pytest.skip("未提交 shikar-subway.json")
+    data = json.loads(open(path, encoding="utf-8").read())
+    by_name = {}
+    for f in data["features"]:
+        if f["geometry"]["type"] == "Point":
+            by_name.setdefault(f["properties"]["name"], set()).update(f["properties"]["line_ids"])
+
+    def line_shorts(name, city):
+        return {lid.split(":", 1)[1] for lid in by_name.get(name, set()) if lid.startswith(city + ":")}
+
+    # 北京换乘
+    assert {"4号线大兴线", "13号线", "2号线"}.issubset(line_shorts("西直门", "北京"))
+    assert {"10号线", "1号线"}.issubset(line_shorts("国贸", "北京"))
+    assert {"14号线东段", "15号线"}.issubset(line_shorts("望京", "北京"))
+    # 天津换乘（审核点名 天津站缺 3/9）
+    assert {"2号线", "3号线", "9号线"}.issubset(line_shorts("天津站", "天津"))
+    # 换乘站总量应显著大于 0（此前缺陷为 0）。
+    transfer = [n for n, ls in by_name.items() if len(ls) > 1]
+    assert len(transfer) > 50
+
+
+def test_prepare_tolerance_rejects_far_line(tmp_path):
+    """离折线 > 阈值的线路不得被误配到站点（避免邻近线路假换乘）。"""
+    mod = _load_module()
+    # 站点在 A 线端点(116,40)，B 线在纬度 40.01 处（约 1.1km），阈值 50m 不应配 B。
+    stations = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [116.0, 40.0]},
+         "properties": {"name": "甲"}},
+    ]}
+    lines = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[116.0, 40.0], [116.02, 40.0]]},
+         "properties": {"name": "A线", "short": "A"}},
+        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[116.0, 40.01], [116.02, 40.01]]},
+         "properties": {"name": "B线", "short": "B"}},
+    ]}
+    payload = mod.prepare(
+        [str(_write(tmp_path / "beijing-station.json", stations))],
+        [str(_write(tmp_path / "beijing-line.json", lines))],
+        {"beijing": "北京"}, source="t", version="v1", tolerance_km=0.05,
+    )
+    pt = next(f for f in payload["features"] if f["geometry"]["type"] == "Point")
+    assert pt["properties"]["line_ids"] == ["北京:A"]
+
+
+# --------------------------------------------------------------------------- #
+# P1-02 启动导入：默认路径按仓库解析；缺文件严格模式报错
+# --------------------------------------------------------------------------- #
+def test_main_ensure_subway_strict_missing_raises(tmp_path):
+    """strict=True 且文件缺失时抛 FileNotFoundError（缺文件明确报错）。"""
+    from shikar import main as main_mod
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    storage.init_db(c)
+    try:
+        with pytest.raises(FileNotFoundError):
+            main_mod.ensure_subway(c, str(tmp_path / "nope.json"), strict=True)
+    finally:
+        c.close()
+
+
+def test_main_default_paths_are_absolute_repo_paths():
+    """默认 db/geojson 路径为绝对路径且指向仓库内（与 cwd 无关，修 P1-02）。"""
+    from shikar import main as main_mod
+    root = main_mod.repo_root()
+    assert os.path.isabs(root)
+    assert os.path.isdir(os.path.join(root, "backend"))
+    # 默认 GeoJSON 指向仓库 data/subway 下。
+    default_geo = main_mod._DEFAULT_SUBWAY_GEOJSON
+    assert os.path.isabs(default_geo)
+    assert default_geo.replace("\\", "/").endswith("data/subway/shikar-subway.json")

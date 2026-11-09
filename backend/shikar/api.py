@@ -167,6 +167,43 @@ def _list(qs: dict[str, list[str]], key: str) -> Optional[list[str]]:
     return values or None
 
 
+def _strict_float(
+    qs: dict[str, list[str]], key: str, label: str
+) -> Optional[float]:
+    """取某键首个值并严格转浮点；缺失/空串返回 ``None``，非法数字抛 ``ValueError``。
+
+    与 :func:`_first_float`（非法按未提供处理）不同，本函数用于**用户明确传了但
+    格式错误**的场景，须返回 400 而非静默忽略（见审核 P2-01）。
+
+    :param qs: ``parse_qs`` 解析出的映射。
+    :param key: 查询参数名。
+    :param label: 中文标签，用于错误信息。
+    :return: 浮点数或 ``None``。
+    :raises ValueError: 值存在但不是合法数字。
+    """
+    raw = _first(qs, key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label}必须是数字，收到非法值：{raw}")
+
+
+#: 尚未实现（POI 分期）的目录筛选参数；出现即返回 400，不静默忽略（审核 P2-02）。
+_UNSUPPORTED_CATALOG_PARAMS = (
+    "stage",
+    "school_max",
+    "grade",
+    "hospital_max",
+    "hsr_max",
+    "hsr_enabled",
+    "school_poi",
+    "hospital_poi",
+    "hsr_poi",
+)
+
+
 # --------------------------------------------------------------------------- #
 # 路由处理
 # --------------------------------------------------------------------------- #
@@ -217,6 +254,19 @@ def _route(
         q = _first(qs, "q")
         page = _first_int(qs, "page")
         page_size = _first_int(qs, "page_size")
+        # P2-02：学校/医院/高铁等 POI 参数尚未实现，出现即明确 400，不静默返回全部。
+        unsupported = [k for k in _UNSUPPORTED_CATALOG_PARAMS if _first(qs, k) is not None]
+        if unsupported:
+            return 400, {
+                "error": "以下参数暂不支持（POI 能力在后续分期实现）：" + "、".join(unsupported)
+            }
+        # P2-01：价格/地铁阈值等数值参数必须是合法数字，非法（如 abc）返回 400。
+        try:
+            price_min = _strict_float(qs, "price_min", "最低均价")
+            price_max = _strict_float(qs, "price_max", "最高均价")
+            subway_max = _strict_float(qs, "subway_max", "地铁距离")
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
         try:
             return 200, catalog.query_catalog(
                 conn,
@@ -225,12 +275,13 @@ def _route(
                 q=q,
                 page=page if page is not None else 1,
                 page_size=page_size if page_size is not None else 50,
-                price_min=_first_float(qs, "price_min"),
-                price_max=_first_float(qs, "price_max"),
+                price_min=price_min,
+                price_max=price_max,
+                price_week=_first(qs, "price_week"),
                 lines=_list(qs, "line"),
                 station=_first(qs, "station"),
                 subway_mode=_first(qs, "subway_mode") or "station",
-                subway_max=_first_float(qs, "subway_max"),
+                subway_max=subway_max,
                 sort=_first(qs, "sort") or "default",
             )
         except ValueError as exc:

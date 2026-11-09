@@ -251,3 +251,62 @@ def test_catalog_price_bounds_validation(conn):
         catalog.query_catalog(conn, price_min=100, price_max=50)
     with pytest.raises(ValueError, match="地铁距离"):
         catalog.query_catalog(conn, lines=["a"], subway_max=99)
+
+
+# --------------------------------------------------------------------------- #
+# P1-01 换乘：同一站点关联多线路后可被任一所含线路检索到
+# --------------------------------------------------------------------------- #
+def _transfer_geojson() -> dict:
+    """站点 s3(116.01,40) 同时属于线 b(竖线) 与线 c(经过该点的横线)。"""
+    return {
+        "type": "FeatureCollection", "source": "t", "version": "v1", "coord_system": "wgs84",
+        "features": [
+            {"type": "Feature", "properties": {"id": "b", "city": "北京", "name": "乙线"},
+             "geometry": {"type": "LineString", "coordinates": [[116.01, 39.99], [116.01, 40.01]]}},
+            {"type": "Feature", "properties": {"id": "c", "city": "北京", "name": "丙线"},
+             "geometry": {"type": "LineString", "coordinates": [[116.0, 40.0], [116.02, 40.0]]}},
+            {"type": "Feature", "properties": {"id": "s3", "city": "北京", "name": "丙站",
+                                               "line_ids": ["b", "c"]},
+             "geometry": {"type": "Point", "coordinates": [116.01, 40.0]}},
+        ],
+    }
+
+
+def test_transfer_station_matched_by_each_line():
+    c = _conn()
+    try:
+        storage.upsert_xiaoqu(c, {"id": "xt", "name": "xt", "city": "北京", "district": "海淀",
+                                  "plate": "p", "alias": None, "lng": 116.01, "lat": 40.0,
+                                  "build_year": None, "households": None})
+        subway.import_geojson(c, _transfer_geojson(), community_crs="wgs84")
+        # 用线 b 或线 c 过滤都应命中 xt（换乘站两线都在 0 距离内）。
+        for lid in ("b", "c"):
+            sql, params = subway.filter_sql(c, city="北京", lines=[lid], radius=0.2)
+            assert "xt" in {r[0] for r in c.execute(sql, params)}, f"line {lid} 漏查换乘站"
+        # 指定站点 s3 也能命中。
+        sql, params = subway.filter_sql(c, city="北京", station="s3", radius=0.2)
+        assert "xt" in {r[0] for r in c.execute(sql, params)}
+    finally:
+        c.close()
+
+
+# --------------------------------------------------------------------------- #
+# P2-07 阈值边界：恰好等于阈值应命中（<=），略超则不命中
+# --------------------------------------------------------------------------- #
+def test_threshold_boundary_inclusive(conn):
+    # x1 到线 b 的 s3 距离为 0；构造一个恰在阈值上的点难以精确，改用 station 模式：
+    sql, params = subway.filter_sql(conn, city="北京", station="s3", radius=0.0)
+    assert {r[0] for r in conn.execute(sql, params)} == {"x1"}  # 0 <= 0 命中
+    sql2, params2 = subway.filter_sql(conn, city="北京", station="s2", radius=0.0)
+    # x2 就在 s1 而不在 s2；x1 距 s2 约 1.7km -> 均不命中（<=0 严格）
+    assert {r[0] for r in conn.execute(sql2, params2)} == set()
+
+
+# --------------------------------------------------------------------------- #
+# P2-07 组合筛选：地铁 + 价格 AND 同时生效
+# --------------------------------------------------------------------------- #
+def test_catalog_combined_subway_and_price(conn):
+    # 线 a<=1km 命中 x1(60000)、x2(90000)；再加价格<=70000 -> 仅 x1。
+    res = catalog.query_catalog(conn, city="北京", lines=["a"], subway_max=1.0,
+                                price_min=0, price_max=70000)
+    assert [it["id"] for it in res["items"]] == ["x1"]
