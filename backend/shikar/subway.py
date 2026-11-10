@@ -289,7 +289,8 @@ def import_geojson(
             communities.append(
                 (row["id"], row["city"], to_wgs84((row["lng"], row["lat"]), community_crs))
             )
-    now = datetime.now(timezone.utc).isoformat()
+    # updated_at 使用源数据版本/日期（而非当前时间），保证同一数据重复导入结果可复现。
+    stamp = str(payload.get("data_date") or payload.get("version") or "")
 
     conn.execute("SAVEPOINT subway_import")
     try:
@@ -303,7 +304,7 @@ def import_geojson(
             "INSERT INTO subway_line VALUES (?,?,?,?,?,?,?,?)",
             [
                 (lid, p["city"], p["name"], json.dumps(g, ensure_ascii=False),
-                 payload["source"], payload["version"], now, community_crs)
+                 payload["source"], payload["version"], stamp, community_crs)
                 for lid, (p, g) in lines.items()
             ],
         )
