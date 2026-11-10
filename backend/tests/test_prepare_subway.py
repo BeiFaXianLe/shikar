@@ -196,3 +196,59 @@ def test_main_default_paths_are_absolute_repo_paths():
     default_geo = main_mod._DEFAULT_SUBWAY_GEOJSON
     assert os.path.isabs(default_geo)
     assert default_geo.replace("\\", "/").endswith("data/subway/shikar-subway.json")
+
+
+def test_main_missing_subway_file_exits_nonzero(tmp_path):
+    """P1-2：无地铁表且地铁 GeoJSON 缺失时，默认启动应报错退出（非静默成功）。"""
+    import subprocess
+    import sys
+
+    backend = os.path.join(_REPO_ROOT, "backend")
+    db = tmp_path / "empty.db"
+    missing = tmp_path / "no-such-subway.json"
+    proc = subprocess.run(
+        [sys.executable, "-m", "shikar.main",
+         "--db", str(db), "--subway-geojson", str(missing), "--port", "0"],
+        cwd=backend, capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert "未找到地铁 GeoJSON" in (proc.stderr + proc.stdout)
+
+
+def test_main_allow_no_subway_starts_without_geojson(tmp_path):
+    """--allow-no-subway 时缺文件不报错退出（允许无地铁状态启动）。"""
+    import subprocess
+    import sys
+
+    backend = os.path.join(_REPO_ROOT, "backend")
+    db = tmp_path / "empty2.db"
+    missing = tmp_path / "no-such-subway2.json"
+    # 用 --help 之外的方式：加 --allow-no-subway 后 begin serve；为不阻塞，给非法端口立即失败？
+    # 改为直接调用 run 的解析部分不可行（会 serve_forever）。故用超时启动后判定其进入了 serve。
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "shikar.main",
+         "--db", str(db), "--subway-geojson", str(missing), "--port", "0", "--allow-no-subway"],
+        cwd=backend, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        # 启动成功会打印"服务已启动"；读取一行判断未因缺文件退出。
+        import time
+        time.sleep(4)
+        alive = proc.poll() is None
+        assert alive, ("进程提前退出", proc.returncode)
+    finally:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            proc.kill()
+
+
+def test_cd_backend_finds_default_geojson():
+    """在 backend 目录下，默认 GeoJSON 解析到存在的仓库文件（cd backend 启动可命中）。"""
+    from shikar import main as main_mod
+    # 模拟 cwd=backend：默认路径是绝对路径，不依赖 cwd。
+    assert os.path.isfile(main_mod._DEFAULT_SUBWAY_GEOJSON)
+    # 相对路径也应被按仓库根解析（run 内逻辑）：此处直接验证目标文件在仓库内存在。
+    rel = os.path.join("data", "subway", "shikar-subway.json")
+    assert os.path.isfile(os.path.join(main_mod.repo_root(), rel))

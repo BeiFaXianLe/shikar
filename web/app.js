@@ -742,7 +742,12 @@
     if (params.subway_mode === "line" || params.subway_mode === "station") {
       findState.subwayMode = params.subway_mode;
     }
-    if (params.station !== undefined && findState.lines.length) findState.station = params.station;
+    // 单站深链（P2-4）：station 独立恢复，不依赖 lines 存在；后端对 station 单独生效。
+    // 站点归属城市/线路的关系由服务端 filter_sql 校验（非法站点会返回 400 并提示）。
+    if (params.station !== undefined && params.station !== "") {
+      findState.station = params.station;
+      if (findState.subwayMode === "line") findState.subwayMode = "station";
+    }
     if (params.price_min !== undefined) findState.priceMin = params.price_min;
     if (params.price_max !== undefined) findState.priceMax = params.price_max;
     if (params.price_week !== undefined) findState.priceWeek = params.price_week;
@@ -839,6 +844,7 @@
       if (findState.priceMin || findState.priceMax) {
         items.push(["price", (findState.priceMin || "不限") + "–" + (findState.priceMax || "不限") + " 元/㎡"]);
       }
+      if (findState.priceWeek) items.push(["priceweek", "期次：" + findState.priceWeek]);
       if (findState.lines.length || findState.station) {
         var mode = findState.subwayMode === "line"
           ? "距线路" : (findState.station ? stationNameOf(findState.station) : "距站");
@@ -884,6 +890,8 @@
         findState.station = "";
       } else if (key === "price") {
         findState.priceMin = ""; findState.priceMax = "";
+      } else if (key === "priceweek") {
+        findState.priceWeek = "";
       } else if (key === "radius") {
         findState.subwayMax = 1; findState.subwayMode = "station"; findState.station = "";
       } else if (key === "district") {
@@ -897,7 +905,7 @@
 
     function clearOthers() {
       findState.lines = []; findState.station = "";
-      findState.priceMin = ""; findState.priceMax = "";
+      findState.priceMin = ""; findState.priceMax = ""; findState.priceWeek = "";
       findState.subwayMax = 1; findState.subwayMode = "station";
       findState.district = ""; findState.q = "";
       findState.page = 1;
@@ -982,12 +990,13 @@
       if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
         momText = "近月 " + fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
       }
-      // P1-03：每条价格标注期次；非最新一期显式标「历史」。
+      // P1-03/P1-1：每条价格标注期次与来源；非全库最新一期显式标「历史」。
       var periodNode = null;
-      if (it.latest_week) {
+      var srcWeek = it.price_source_week || it.latest_week;
+      if (srcWeek) {
         periodNode = el("span", {
           class: "fr-period" + (it.price_is_current ? "" : " fr-period-hist"),
-          text: it.price_is_current ? it.latest_week : it.latest_week + "（历史）",
+          text: "价源：" + srcWeek + (it.price_is_current ? "" : "（历史）"),
         });
       }
       var href = "#/xiaoqu/" + encodeURIComponent(it.id);
@@ -1128,6 +1137,20 @@
       var inner = dlg.querySelector(".fd-inner");
       var bodyPrev = inner.querySelector(".fd-body");
       if (preserveScroll == null && bodyPrev) preserveScroll = bodyPrev.scrollTop;
+      // 重绘前捕获当前焦点元素（id）及其输入光标 selection，重绘后恢复。
+      // 用 document.activeElement + getElementById，避免把含冒号的线路 id 拼成
+      // 非法 CSS 选择器（P2-3）。applyFocusId 用于「操作后主动聚焦某控件」。
+      var savedFocusId = preserveFocusId;
+      var savedSel = null;
+      var active = document.activeElement;
+      if (active && active.id && inner.contains(active)) {
+        if (!savedFocusId) savedFocusId = active.id;
+        try {
+          if (typeof active.selectionStart === "number") {
+            savedSel = [active.selectionStart, active.selectionEnd];
+          }
+        } catch (e) { savedSel = null; }
+      }
       inner.innerHTML = "";
       var body = el("div", { class: "fd-body" });
       var head = el("div", { class: "fd-head" }, [
@@ -1185,6 +1208,7 @@
         stationSel.appendChild(o);
       });
       stationSel.disabled = !(draft.lines.length) || draft.subwayMode === "line";
+      stationSel.id = "fd-station";
       stationSel.addEventListener("change", function () { draft.station = stationSel.value; });
 
       var modeSel = el("select", { class: "ff-select", "aria-label": "地铁距离口径" }, [
@@ -1196,7 +1220,7 @@
       modeSel.id = "fd-mode";
 
       var maxOut = el("output", { class: "fd-range-out", text: Number(draft.subwayMax).toFixed(1) + " km" });
-      var maxRange = el("input", { type: "range", min: "0.1", max: "5", step: "0.1", value: String(draft.subwayMax), "aria-label": "最大地铁距离" });
+      var maxRange = el("input", { type: "range", min: "0.1", max: "5", step: "0.1", id: "fd-submax", value: String(draft.subwayMax), "aria-label": "最大地铁距离" });
       maxRange.addEventListener("input", function () {
         draft.subwayMax = Number(maxRange.value);
         maxOut.textContent = Number(draft.subwayMax).toFixed(1) + " km";
@@ -1216,7 +1240,7 @@
       );
 
       // 区域与名称
-      var districtSel = el("select", { class: "ff-select", "aria-label": "行政区" });
+      var districtSel = el("select", { class: "ff-select", "aria-label": "行政区", id: "fd-district" });
       districtSel.appendChild(el("option", { value: "", text: "全部行政区" }));
       (draft.districts || []).forEach(function (r) {
         var o = el("option", { value: r.district, text: r.district });
@@ -1225,7 +1249,7 @@
       });
       districtSel.disabled = !draft.city;
       districtSel.addEventListener("change", function () { draft.district = districtSel.value; });
-      var qInput = el("input", { type: "search", class: "ff-input", "aria-label": "小区名称", placeholder: "输入关键词", value: draft.q || "" });
+      var qInput = el("input", { type: "search", class: "ff-input", "aria-label": "小区名称", placeholder: "输入关键词", id: "fd-q", value: draft.q || "" });
       qInput.addEventListener("input", function () { draft.q = qInput.value; });
       body.appendChild(group("02", "区域与名称", [
         fieldRow("行政区", districtSel),
@@ -1272,12 +1296,19 @@
       });
       citySel.id = "fd-city";
 
-      // 重绘后恢复滚动与焦点（P1-04：重绘不清空草稿/不丢焦点）。
-      if (bodyPrev) { /* body 替换后无法直接复用节点，这里恢复滚动位置 */ }
+      // 重绘后恢复滚动与焦点（P2-3：重绘不丢焦点/光标 selection）。
+      if (bodyPrev) { /* body 节点已替换 */ }
       body.scrollTop = preserveScroll || 0;
-      if (preserveFocusId) {
-        var focusEl = inner.querySelector("#" + preserveFocusId);
-        if (focusEl) { try { focusEl.focus(); } catch (e) {} }
+      if (savedFocusId) {
+        try {
+          var focusEl = document.getElementById(savedFocusId);
+          if (focusEl && inner.contains(focusEl)) {
+            focusEl.focus();
+            if (savedSel && typeof focusEl.setSelectionRange === "function") {
+              try { focusEl.setSelectionRange(savedSel[0], savedSel[1]); } catch (e) {}
+            }
+          }
+        } catch (e) { /* 忽略焦点恢复异常，不影响功能 */ }
       }
     }
 

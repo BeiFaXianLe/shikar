@@ -151,22 +151,33 @@ def query_catalog(
     size_n = _clamp_page_size(page_size)
     where_sql, params = _build_where(city, district, q)
 
-    # 最新一期价格：用同一 LEFT JOIN 供 total 与分页共用，绝不填充旧价格。
-    from_sql = (
-        " FROM xiaoqu x LEFT JOIN xiaoqu_metric_weekly m "
-        "ON m.xiaoqu_id=x.id AND m.week=("
-        "SELECT MAX(mm.week) FROM xiaoqu_metric_weekly mm WHERE mm.xiaoqu_id=x.id) "
-    )
+    # 价格与期次：metrics 关联哪一期。
+    # - 指定 price_week：直接关联「该期次」指标（是这期就参与，不因有更新一期而被漏），
+    #   价格过滤/排序/来源均基于该期。
+    # - 未指定：关联各小区「最新一期」作为当前参考价。
+    # 该 JOIN 由 total 与分页共用；绝不把缺失期次填成别的期价格。
+    has_price_week = price_week is not None and price_week != ""
+    if has_price_week:
+        from_sql = (
+            " FROM xiaoqu x JOIN xiaoqu_metric_weekly m "
+            "ON m.xiaoqu_id=x.id AND m.week=? "
+        )
+        # 期次参数在 total/分页两处都要在 WHERE 之前绑定（JOIN 里用），单列管理。
+        metric_join_params = [price_week]
+    else:
+        from_sql = (
+            " FROM xiaoqu x LEFT JOIN xiaoqu_metric_weekly m "
+            "ON m.xiaoqu_id=x.id AND m.week=("
+            "SELECT MAX(mm.week) FROM xiaoqu_metric_weekly mm WHERE mm.xiaoqu_id=x.id) "
+        )
+        metric_join_params = []
+
     if price_min is not None:
         where_sql += " AND m.price >= ?"
         params.append(price_min)
     if price_max is not None:
         where_sql += " AND m.price <= ?"
         params.append(price_max)
-    # 期次限定：只取最新一期恰为该期次的小区，确保价格过滤/排序在同一期次内比较。
-    if price_week is not None and price_week != "":
-        where_sql += " AND m.week = ?"
-        params.append(price_week)
 
     # 地铁筛选：任一条件触发即启用；阈值缺省取默认 1 km（与前端默认一致）。
     active_subway = bool(lines or station or subway_max is not None)
@@ -208,8 +219,10 @@ def query_catalog(
     else:
         order = stable
 
+    # 参数顺序：JOIN 参数 → WHERE 参数（total 与分页一致）。
     total_row = conn.execute(
-        f"SELECT COUNT(*) AS n {from_sql} WHERE 1 = 1 {where_sql}", params
+        f"SELECT COUNT(*) AS n {from_sql} WHERE 1 = 1 {where_sql}",
+        metric_join_params + params,
     ).fetchone()
     total = int(total_row["n"]) if total_row is not None else 0
 
@@ -218,7 +231,7 @@ def query_catalog(
         f"SELECT x.id,x.city,x.district,x.plate,x.name,m.week,m.price,m.mom4,"
         f"{distance_sql} AS sort_distance {from_sql} "
         f"WHERE 1 = 1 {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
-        distance_params + params + [size_n, offset],
+        metric_join_params + distance_params + params + [size_n, offset],
     ).fetchall()
 
     row_ids = [r["id"] for r in rows]
@@ -229,12 +242,9 @@ def query_catalog(
     # 全库最新期次（用于标记「当前价」vs「历史价」）。
     max_week_row = conn.execute("SELECT MAX(week) AS w FROM xiaoqu_metric_weekly").fetchone()
     max_week = max_week_row["w"] if max_week_row is not None else None
-    # 库中期次分布（期次 → 该期次为最新一期的小区数），供前端展示/选择期次。
+    # 库中期次分布（期次 → 该期指标行数），供前端展示/选择期次。
     period_rows = conn.execute(
-        "SELECT m.week AS week, COUNT(*) AS n FROM xiaoqu x JOIN xiaoqu_metric_weekly m "
-        "ON m.xiaoqu_id=x.id AND m.week=("
-        "SELECT MAX(mm.week) FROM xiaoqu_metric_weekly mm WHERE mm.xiaoqu_id=x.id) "
-        "GROUP BY m.week ORDER BY m.week DESC"
+        "SELECT week, COUNT(*) AS n FROM xiaoqu_metric_weekly GROUP BY week ORDER BY week DESC"
     ).fetchall()
     price_periods = [{"week": r["week"], "communities": int(r["n"])} for r in period_rows]
     items: list[dict] = []
@@ -256,6 +266,8 @@ def query_catalog(
                 "latest_week": row["week"],
                 "latest_mom": row["mom4"],
                 "price_is_current": row["week"] == max_week,
+                # 价格来源：本行价格取自哪一期指标（逐行显示，明确口径）。
+                "price_source_week": row["week"],
                 "features": {"subway": features.get(row["id"])},
             }
         )
@@ -265,5 +277,6 @@ def query_catalog(
         "page": page_n,
         "page_size": size_n,
         "price_periods": price_periods,
+        "price_week": price_week if has_price_week else None,
         "items": items,
     }

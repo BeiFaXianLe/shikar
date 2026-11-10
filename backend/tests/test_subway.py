@@ -302,6 +302,15 @@ def test_threshold_boundary_inclusive(conn):
     assert {r[0] for r in conn.execute(sql2, params2)} == set()
 
 
+def test_threshold_nonzero_both_sides(conn):
+    """P2-7：合法非零阈值的两侧边界（刚够 / 刚不够）。"""
+    # x1 恰在 s3 上（0km）。s1-s3 间距约 0.86km。
+    near = {r[0] for r in conn.execute(*subway.filter_sql(conn, city="北京", station="s1", radius=0.9))}
+    far = {r[0] for r in conn.execute(*subway.filter_sql(conn, city="北京", station="s1", radius=0.5))}
+    assert "x1" in near          # 0.86km <= 0.9 命中
+    assert "x1" not in far       # 0.86km >  0.5 不命中（另一侧）
+
+
 # --------------------------------------------------------------------------- #
 # P2-07 组合筛选：地铁 + 价格 AND 同时生效
 # --------------------------------------------------------------------------- #

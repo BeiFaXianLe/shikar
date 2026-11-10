@@ -154,18 +154,25 @@ def test_catalog_unsupported_poi_param_returns_400(server_with_subway, param):
 # P1-03：价格期次口径 —— 每条带期次与当前/历史标记，可按期次限定
 # --------------------------------------------------------------------------- #
 def _conn_periods() -> sqlite3.Connection:
-    """两个小区：x_cur 最新为 2026-W46，x_old 最新为 2019-02。"""
+    """三期小区：x_cur 仅 2026、x_old 仅 2019、x_both 同时有 2019 与 2026（富贵园 案例）。"""
     c = sqlite3.connect(":memory:", check_same_thread=False)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
     init_db(c)
-    for xid, price, week in [("x_cur", 90000.0, "2026-W46"), ("x_old", 30000.0, "2019-02")]:
+
+    def add(xid):
         upsert_xiaoqu(c, {"id": xid, "name": xid, "city": "北京", "district": "海淀",
                           "plate": "p", "alias": None, "lng": None, "lat": None,
                           "build_year": None, "households": None})
+
+    def metric(xid, week, price):
         upsert_metric(c, {"xiaoqu_id": xid, "week": week, "price": price, "mom4": None,
                           "mom13": None, "supply": None, "vol30": None, "absorb": None,
                           "bargain": None, "heat": None, "temperature": None, "stage": None})
+
+    add("x_cur"); metric("x_cur", "2026-W46", 90000.0)
+    add("x_old"); metric("x_old", "2019-02", 30000.0)
+    add("x_both"); metric("x_both", "2019-02", 111437.0); metric("x_both", "2026-W46", 113307.0)
     return c
 
 
@@ -188,13 +195,39 @@ def test_catalog_price_period_flags(server_periods):
     assert items["x_cur"]["price_is_current"] is True
     assert items["x_old"]["price_is_current"] is False
     assert items["x_old"]["latest_week"] == "2019-02"
-    # 期次分布包含两期。
+    # x_both 默认显示最新一期 2026-W46。
+    assert items["x_both"]["latest_week"] == "2026-W46"
+    assert items["x_both"]["price_source_week"] == "2026-W46"
     weeks = {p["week"] for p in payload["price_periods"]}
     assert {"2026-W46", "2019-02"} <= weeks
 
 
 def test_catalog_price_week_restricts_to_period(server_periods):
-    # 限定 2026-W46：只返回当期小区，价格过滤不再与 2019 混比。
+    # 限定 2026-W46：x_cur 与 x_both（有 2026）应返回，x_old 无 2026 不返回。
     status, payload = _get(server_periods, "/api/catalog?price_week=2026-W46")
     assert status == 200
-    assert [it["id"] for it in payload["items"]] == ["x_cur"]
+    ids = {it["id"] for it in payload["items"]}
+    assert ids == {"x_cur", "x_both"}
+
+
+def test_catalog_price_week_includes_updated_history_period(server_periods):
+    """P1-1 回归：查历史期次 2019-02 必须包含「后在 2026 更新过」的 x_both。
+
+    旧实现先取最新记录再判 week，会把 x_both 漏掉（富贵园一区 复现）。
+    """
+    status, payload = _get(server_periods, "/api/catalog?price_week=2019-02")
+    assert status == 200
+    ids = {it["id"] for it in payload["items"]}
+    assert ids == {"x_old", "x_both"}
+    xb = next(it for it in payload["items"] if it["id"] == "x_both")
+    # 价格取 2019-02 期，来源期次标注 2019-02，且非全库最新期（历史）。
+    assert xb["latest_price"] == 111437.0
+    assert xb["price_source_week"] == "2019-02"
+    assert xb["price_is_current"] is False
+
+
+def test_catalog_price_week_filter_within_period(server_periods):
+    # 2019-02 期内按价格过滤：只应比较该期价格。
+    status, payload = _get(server_periods, "/api/catalog?price_week=2019-02&price_min=100000")
+    assert status == 200
+    assert {it["id"] for it in payload["items"]} == {"x_both"}  # x_old=30000 被滤掉
