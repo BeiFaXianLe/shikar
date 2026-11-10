@@ -13,3 +13,5 @@ venv/
 .shots/
 
 data/shikar.db
+
+.secrets/
