@@ -996,7 +996,7 @@
       if (srcWeek) {
         periodNode = el("span", {
           class: "fr-period" + (it.price_is_current ? "" : " fr-period-hist"),
-          text: "价源：" + srcWeek + (it.price_is_current ? "" : "（历史）"),
+          text: "价源：" + srcWeek + (it.price_source ? " · " + it.price_source : "") + (it.price_is_current ? "" : "（历史）"),
         });
       }
       var href = "#/xiaoqu/" + encodeURIComponent(it.id);
@@ -1291,7 +1291,7 @@
         draft.city = citySel.value;
         draft.lines = []; draft.station = ""; draft.district = "";
         loadSubwayLines(draft.city).then(function () {
-          fetchDistricts(draft.city).then(function (rows) { draft.districts = rows || []; render("fd-city"); });
+          fetchDistricts(draft.city).then(function (rows) { draft.districts = rows || []; render(); });
         });
       });
       citySel.id = "fd-city";

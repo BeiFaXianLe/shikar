@@ -231,7 +231,7 @@ def query_catalog(
         f"SELECT x.id,x.city,x.district,x.plate,x.name,m.week,m.price,m.mom4,"
         f"{distance_sql} AS sort_distance {from_sql} "
         f"WHERE 1 = 1 {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
-        metric_join_params + distance_params + params + [size_n, offset],
+        distance_params + metric_join_params + params + [size_n, offset],
     ).fetchall()
 
     row_ids = [r["id"] for r in rows]
@@ -268,6 +268,11 @@ def query_catalog(
                 "price_is_current": row["week"] == max_week,
                 # 价格来源：本行价格取自哪一期指标（逐行显示，明确口径）。
                 "price_source_week": row["week"],
+                # 真实平台来源（2019 快照=链家，2026 快照=房天下）。
+                "price_source": (
+                    "链家2019" if row["week"] == "2019-02"
+                    else ("房天下" if str(row["week"]).startswith("2026-") else "未知")
+                ),
                 "features": {"subway": features.get(row["id"])},
             }
         )

@@ -319,3 +319,31 @@ def test_catalog_combined_subway_and_price(conn):
     res = catalog.query_catalog(conn, city="北京", lines=["a"], subway_max=1.0,
                                 price_min=0, price_max=70000)
     assert [it["id"] for it in res["items"]] == ["x1"]
+
+
+# --------------------------------------------------------------------------- #
+# P1 回归：price_week 与 line/station 组合时的参数绑定顺序（total>0 但 items=[]）
+# --------------------------------------------------------------------------- #
+def test_catalog_price_week_with_line_all_params_bound(conn):
+    res = catalog.query_catalog(conn, city="北京", lines=["a"], subway_max=1.0, price_week="2026-W46")
+    assert res["total"] > 0
+    assert len(res["items"]) == res["total"], "不得出现 total>0 但 items=[]（参数绑定错位）"
+    assert "x2" in [it["id"] for it in res["items"]]
+
+
+def test_catalog_price_week_with_station_all_params_bound(conn):
+    res = catalog.query_catalog(conn, city="北京", station="s3", price_week="2026-W46")
+    assert res["total"] > 0
+    assert len(res["items"]) == res["total"]
+    assert "x1" in [it["id"] for it in res["items"]]
+
+
+def test_catalog_price_week_nonexistent_returns_empty(conn):
+    res = catalog.query_catalog(conn, city="北京", lines=["a"], subway_max=1.0, price_week="1999-01")
+    assert res["total"] == 0 and res["items"] == []
+
+
+def test_catalog_item_exposes_real_price_source(conn):
+    res = catalog.query_catalog(conn, city="北京", q="x")
+    it = next(i for i in res["items"] if i["id"] == "x1")
+    assert it["price_source"] == "房天下"
