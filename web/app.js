@@ -1063,7 +1063,7 @@
     // —— 事件：主筛选 ——
     citySelect.addEventListener("change", function () {
       findState.city = citySelect.value;
-      findState.lines = []; findState.station = ""; findState.district = "";
+      findState.lines = []; findState.station = ""; findState.district = ""; findState.q = "";
       findState.page = 1;
       loadSubwayLines(findState.city).then(refreshAll);
     });
@@ -1359,7 +1359,8 @@
         appEl.innerHTML = "";
         appEl.appendChild(backLink("#/catalog", "← 返回目录"));
         appEl.appendChild(renderDetailHead(detail, series));
-        appEl.appendChild(renderTwoPeriodCompare(series));
+        var compareNode = renderTwoPeriodCompare(series);
+        if (compareNode) appEl.appendChild(compareNode);
         appEl.appendChild(renderSeriesSection(series));
         appEl.appendChild(renderSignalsSection(signals));
       })
