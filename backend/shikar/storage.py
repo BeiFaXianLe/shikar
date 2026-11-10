@@ -115,6 +115,36 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON xiaoqu (city, district);
         CREATE INDEX IF NOT EXISTS idx_metric_weekly_xiaoqu_week
             ON xiaoqu_metric_weekly (xiaoqu_id, week);
+        CREATE INDEX IF NOT EXISTS idx_xiaoqu_lat_lng
+            ON xiaoqu (lat, lng);
+
+        CREATE TABLE IF NOT EXISTS poi (
+            id       TEXT PRIMARY KEY,
+            type     TEXT NOT NULL,
+            subtype  TEXT,
+            name     TEXT NOT NULL,
+            city     TEXT,
+            grade    TEXT,
+            lat      REAL,
+            lng      REAL,
+            district TEXT,
+            address  TEXT,
+            source   TEXT,
+            version  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_poi_type ON poi (type, subtype);
+        CREATE INDEX IF NOT EXISTS idx_poi_lat_lng ON poi (lat, lng);
+
+        CREATE TABLE IF NOT EXISTS community_poi (
+            community_id TEXT NOT NULL,
+            poi_id       TEXT NOT NULL,
+            distance_km  REAL NOT NULL,
+            PRIMARY KEY (community_id, poi_id),
+            FOREIGN KEY (community_id) REFERENCES xiaoqu (id),
+            FOREIGN KEY (poi_id) REFERENCES poi (id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_community_poi_poi
+            ON community_poi (poi_id, distance_km, community_id);
         """
     )
     conn.commit()
@@ -308,3 +338,59 @@ def list_signals(conn: sqlite3.Connection, xiaoqu_id: str) -> list[dict]:
         item["reason"] = json.loads(raw) if raw else None
         result.append(item)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# POI（学校/医院/高铁）与「小区—POI 距离」
+# --------------------------------------------------------------------------- #
+def upsert_poi(conn: sqlite3.Connection, row: Mapping) -> None:
+    """按 id upsert 一条 POI。row 需含 id,type,name。"""
+    conn.execute(
+        "INSERT INTO poi (id,type,subtype,name,city,grade,lat,lng,district,address,source,version) "
+        "VALUES (:id,:type,:subtype,:name,:city,:grade,:lat,:lng,:district,:address,:source,:version) "
+        "ON CONFLICT (id) DO UPDATE SET type=excluded.type,subtype=excluded.subtype,name=excluded.name,"
+        "city=excluded.city,grade=excluded.grade,lat=excluded.lat,lng=excluded.lng,district=excluded.district,"
+        "address=excluded.address,source=excluded.source,version=excluded.version",
+        {"id": row.get("id"), "type": row.get("type"), "subtype": row.get("subtype"),
+         "name": row.get("name"), "city": row.get("city"), "grade": row.get("grade"), "lat": row.get("lat"),
+         "lng": row.get("lng"), "district": row.get("district"), "address": row.get("address"),
+         "source": row.get("source"), "version": row.get("version")},
+    )
+
+
+def upsert_community_poi(conn: sqlite3.Connection, community_id: str, poi_id: str, distance_km: float) -> None:
+    conn.execute(
+        "INSERT INTO community_poi (community_id,poi_id,distance_km) VALUES (?,?,?) "
+        "ON CONFLICT (community_id,poi_id) DO UPDATE SET distance_km=excluded.distance_km",
+        (community_id, poi_id, distance_km),
+    )
+
+
+def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
+              grade: str | None = None, district: str | None = None,
+              city: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM poi WHERE type = ?"
+    params: list = [type_]
+    if subtype:
+        sql += " AND subtype = ?"; params.append(subtype)
+    if grade:
+        sql += " AND grade = ?"; params.append(grade)
+    if city:
+        sql += " AND city = ?"; params.append(city)
+    if district:
+        sql += " AND district LIKE ?"; params.append(district + "%")
+    sql += " ORDER BY name ASC"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def top_communities_for_poi(conn: sqlite3.Connection, poi_id: str, limit: int = 20) -> list[dict]:
+    rows = conn.execute(
+        "SELECT cp.community_id AS id, x.name, x.city, x.district, x.plate, cp.distance_km, "
+        "  (SELECT price FROM xiaoqu_metric_weekly m WHERE m.xiaoqu_id=x.id ORDER BY week DESC LIMIT 1) AS latest_price, "
+        "  (SELECT week FROM xiaoqu_metric_weekly m WHERE m.xiaoqu_id=x.id ORDER BY week DESC LIMIT 1) AS latest_week "
+        "FROM community_poi cp JOIN xiaoqu x ON x.id = cp.community_id "
+        "WHERE cp.poi_id = ? ORDER BY cp.distance_km ASC, x.id ASC LIMIT ?",
+        (poi_id, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+

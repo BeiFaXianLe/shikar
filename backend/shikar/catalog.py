@@ -100,6 +100,11 @@ def query_catalog(
     station: Optional[str] = None,
     subway_mode: str = "station",
     subway_max: Optional[float] = None,
+    stage: Optional[str] = None,
+    school_max: Optional[float] = None,
+    grade: Optional[str] = None,
+    hospital_max: Optional[float] = None,
+    hsr_max: Optional[float] = None,
     sort: str = "default",
 ) -> dict:
     """按城市 / 区 / 关键词 / 价格 / 地铁条件过滤并分页查询小区目录。
@@ -134,7 +139,8 @@ def query_catalog(
         未导入地铁数据、线路/站点非法。
     """
     for label, value in (
-        ("最低均价", price_min), ("最高均价", price_max), ("地铁距离", subway_max)
+        ("最低均价", price_min), ("最高均价", price_max), ("地铁距离", subway_max),
+        ("学校距离", school_max), ("医院距离", hospital_max), ("高铁距离", hsr_max),
     ):
         if value is not None and (not math.isfinite(value) or value < 0):
             raise ValueError(f"{label}必须是有限非负数")
@@ -178,6 +184,35 @@ def query_catalog(
     if price_max is not None:
         where_sql += " AND m.price <= ?"
         params.append(price_max)
+
+    # POI 筛选（学校阶段 / 医院等级 / 高铁）：EXISTS 关系表，条件互取 AND。
+    if stage:
+        smax = school_max if school_max is not None else 3.0
+        where_sql += (
+            " AND EXISTS (SELECT 1 FROM community_poi cp JOIN poi p ON p.id=cp.poi_id "
+            "WHERE cp.community_id=x.id AND p.type='school' AND p.subtype=? AND cp.distance_km<=?)"
+        )
+        params += [stage, smax]
+    if hospital_max is not None or grade:
+        hmax = hospital_max if hospital_max is not None else 3.0
+        if grade:
+            where_sql += (
+                " AND EXISTS (SELECT 1 FROM community_poi cp JOIN poi p ON p.id=cp.poi_id "
+                "WHERE cp.community_id=x.id AND p.type='hospital' AND p.grade=? AND cp.distance_km<=?)"
+            )
+            params += [grade, hmax]
+        else:
+            where_sql += (
+                " AND EXISTS (SELECT 1 FROM community_poi cp JOIN poi p ON p.id=cp.poi_id "
+                "WHERE cp.community_id=x.id AND p.type='hospital' AND cp.distance_km<=?)"
+            )
+            params += [hmax]
+    if hsr_max is not None:
+        where_sql += (
+            " AND EXISTS (SELECT 1 FROM community_poi cp JOIN poi p ON p.id=cp.poi_id "
+            "WHERE cp.community_id=x.id AND p.type='hsr' AND cp.distance_km<=?)"
+        )
+        params += [hsr_max]
 
     # 地铁筛选：任一条件触发即启用；阈值缺省取默认 1 km（与前端默认一致）。
     active_subway = bool(lines or station or subway_max is not None)
@@ -276,6 +311,22 @@ def query_catalog(
                 "features": {"subway": features.get(row["id"])},
             }
         )
+
+    # 为每条结果补「最近学校/医院/高铁」摘要（用于结果次行展示）。
+    for it in items:
+        feats = it.get("features") or {}
+        for typ in ("school", "hospital", "hsr"):
+            qsql = ("SELECT p.id,p.name,p.subtype,p.grade,cp.distance_km FROM community_poi cp "
+                    "JOIN poi p ON p.id=cp.poi_id WHERE cp.community_id=? AND p.type=?")
+            qp: list = [it["id"], typ]
+            if typ == "school" and stage:
+                qsql += " AND p.subtype=?"; qp.append(stage)
+            qsql += " ORDER BY cp.distance_km ASC LIMIT 1"
+            row = conn.execute(qsql, qp).fetchone()
+            if row is not None:
+                feats[typ] = {"id": row["id"], "name": row["name"], "subtype": row["subtype"],
+                              "grade": row["grade"], "distance_km": row["distance_km"]}
+        it["features"] = feats
 
     return {
         "total": total,

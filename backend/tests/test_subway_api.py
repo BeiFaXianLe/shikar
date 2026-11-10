@@ -143,11 +143,19 @@ def test_catalog_invalid_number_returns_400(server_with_subway, param):
 # --------------------------------------------------------------------------- #
 # P2-02：未支持的 POI 参数必须明确 400，不静默返回全部
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("param", ["stage=primary", "school_max=2", "grade=%E4%B8%89%E7%94%B2", "hospital_max=3", "hsr_max=5"])
+@pytest.mark.parametrize("param", ["hsr_enabled=1", "school_poi=x", "hospital_poi=x", "hsr_poi=x"])
 def test_catalog_unsupported_poi_param_returns_400(server_with_subway, param):
     status, payload = _get(server_with_subway, f"/api/catalog?{param}")
     assert status == 400
     assert "不支持" in payload["error"]
+
+
+@pytest.mark.parametrize("param", ["stage=primary", "school_max=2", "grade=%E4%B8%89%E7%94%B2", "hospital_max=3", "hsr_max=5"])
+def test_catalog_supported_poi_params_return_200(server_with_subway, param):
+    # P2a：这些 POI 参数已实现，返回 200（无 POI 数据时结果为空，但不能 400）。
+    status, payload = _get(server_with_subway, f"/api/catalog?{param}")
+    assert status == 200
+    assert "items" in payload
 
 
 # --------------------------------------------------------------------------- #

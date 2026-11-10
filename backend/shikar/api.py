@@ -192,11 +192,6 @@ def _strict_float(
 
 #: 尚未实现（POI 分期）的目录筛选参数；出现即返回 400，不静默忽略（审核 P2-02）。
 _UNSUPPORTED_CATALOG_PARAMS = (
-    "stage",
-    "school_max",
-    "grade",
-    "hospital_max",
-    "hsr_max",
     "hsr_enabled",
     "school_poi",
     "hospital_poi",
@@ -241,6 +236,29 @@ def _route(
     if path == "/api/subway/lines":
         return 200, subway.list_lines(conn, city=_first(qs, "city"))
 
+    # /api/schools  （学校明细：阶段 / 城市 / 区）
+    if path == "/api/schools":
+        return 200, {"items": storage.list_pois(
+            conn, "school", subtype=_first(qs, "stage"), district=_first(qs, "district"),
+            city=_first(qs, "city"))}
+
+    # /api/hospitals  （医院明细：等级 / 城市 / 区）
+    if path == "/api/hospitals":
+        return 200, {"items": storage.list_pois(
+            conn, "hospital", grade=_first(qs, "grade"), district=_first(qs, "district"),
+            city=_first(qs, "city"))}
+
+    # /api/hsr  （高铁站明细）
+    if path == "/api/hsr":
+        return 200, {"items": storage.list_pois(conn, "hsr", city=_first(qs, "city"))}
+
+    # /api/poi/{id}/communities  （某学校/医院/高铁站周边小区 Top N）
+    if path.startswith("/api/poi/") and path.endswith("/communities"):
+        pid = unquote(path[len("/api/poi/"):-len("/communities")].strip("/"))
+        limit = _first_int(qs, "limit") or 20
+        limit = max(1, min(50, limit))
+        return 200, {"items": storage.top_communities_for_poi(conn, pid, limit)}
+
     # /api/xiaoqu  （列表 + 可选过滤）
     if path == "/api/xiaoqu":
         city = _first(qs, "city")
@@ -265,6 +283,9 @@ def _route(
             price_min = _strict_float(qs, "price_min", "最低均价")
             price_max = _strict_float(qs, "price_max", "最高均价")
             subway_max = _strict_float(qs, "subway_max", "地铁距离")
+            school_max = _strict_float(qs, "school_max", "学校距离")
+            hospital_max = _strict_float(qs, "hospital_max", "医院距离")
+            hsr_max = _strict_float(qs, "hsr_max", "高铁距离")
         except ValueError as exc:
             return 400, {"error": str(exc)}
         try:
@@ -282,6 +303,11 @@ def _route(
                 station=_first(qs, "station"),
                 subway_mode=_first(qs, "subway_mode") or "station",
                 subway_max=subway_max,
+                stage=_first(qs, "stage"),
+                school_max=school_max,
+                grade=_first(qs, "grade"),
+                hospital_max=hospital_max,
+                hsr_max=hsr_max,
                 sort=_first(qs, "sort") or "default",
             )
         except ValueError as exc:
