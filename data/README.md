@@ -1,20 +1,21 @@
 # data/ — 持久化数据集
 
-本目录随仓库提交，**换台电脑 clone 下来即可用**，无需重新抓。
+本目录的 CSV 与地铁 GeoJSON 随仓库提交，**换台电脑 clone 后无需重新抓数**；运行一次 `scripts/build_db.py` 即可生成数据库。
 
 | 文件 | 说明 | 规模 |
 |---|---|---|
 | `history2019.csv` | 链家 2019 全量小区快照（公开数据集） | 北京 10101 / 天津 6523 |
 | `fang_2026.csv` | 房天下 2026 当期小区快照（公开聚合页抓取，已去重） | 1955 |
-| `shikar.db` | 由上述两者构建的 SQLite 库（可直接被应用读取） | 17439 小区 / 18579 指标 |
+| `shikar.db` | **构建产物（不随仓库提交，已加入 .gitignore）**：由上面两份 CSV 运行 `scripts/build_db.py` 生成 | 17439 小区 / 18579 指标 |
 | `subway/` | 北京/天津真实地铁线路与站点（WGS84）与导入脚本所需 GeoJSON | 见 `subway/README.md` |
 
 字段：city,district,plate,xiaoqu_id,xiaoqu_name,week,price,supply,built_year,mom1_pct,source
 
 ## 重建数据库
 ```powershell
-python scripts/build_db.py          # -> data/shikar.db
+python scripts/build_db.py          # -> data/shikar.db（构建产物，不提交）
 ```
+> `data/shikar.db` 是构建产物、不纳入版本库；clone 后先运行本命令生成基础库。地铁关系表在首次启动时自动导入（见下），也可显式预构建。`subway_line.updated_at` 取源数据版本，重复构建结果可复现（逐字节一致）。
 
 ## 重建地铁关系表（P1）
 ```powershell
