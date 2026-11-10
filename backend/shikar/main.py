@@ -19,14 +19,27 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sqlite3
+import sys
 from typing import Optional
 
-from shikar import pipeline, storage
+from shikar import pipeline, storage, subway
 from shikar.api import create_server
 from shikar.sources.base import MetricRecord
 
-__all__ = ["seed_demo", "run"]
+__all__ = ["seed_demo", "ensure_subway", "repo_root", "run"]
+
+#: 仓库根目录：``<repo>/backend/shikar/main.py`` 的上三级目录。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#: 默认地铁 GeoJSON（相对仓库根，避免 ``cd backend`` 启动时按当前目录找不到）。
+_DEFAULT_SUBWAY_GEOJSON = os.path.join(_REPO_ROOT, "data", "subway", "shikar-subway.json")
+
+
+def repo_root() -> str:
+    """返回仓库根目录的绝对路径（与当前工作目录无关）。"""
+    return _REPO_ROOT
 
 #: Demo 每小区周数。
 _DEMO_WEEKS = 10
@@ -96,6 +109,44 @@ def _is_empty(conn: sqlite3.Connection) -> bool:
     return bool(row[0] == 0)
 
 
+def ensure_subway(
+    conn: sqlite3.Connection,
+    geojson_path: str,
+    community_crs: str = "wgs84",
+    *,
+    strict: bool = True,
+) -> Optional[dict]:
+    """若尚未导入地铁关系表且 GeoJSON 存在，则在启动时离线构建一次。
+
+    仓储型数据库不提交体积巨大的地铁关系表（1.7 万小区 × 站点的预计算距离可达
+    上百 MB），改由本函数在本地启动时按需重建，保持「clone 后可重建」约定。
+
+    :param conn: 已打开的 SQLite 连接（读写）。
+    :param geojson_path: 适配套路后的地铁 GeoJSON 路径。
+    :param community_crs: 小区坐标的坐标系（须先核实，默认 ``wgs84``）。
+    :param strict: 默认为真：若需构建但文件缺失则**抛错**（明确报错，不让服务静默
+        以空地铁状态启动）。仅当启动方显式选择「允许无地铁」时才传 ``False``。
+    :return: 导入统计字典；跳过（已有表）时返回 ``None``。
+    :raises FileNotFoundError: 需要构建但文件缺失且 ``strict`` 为真。
+    """
+    if subway.available(conn):
+        return None
+    if not geojson_path or not os.path.isfile(geojson_path):
+        message = (
+            f"未找到地铁 GeoJSON：{geojson_path}。库中尚无地铁关系表，"
+            "无法启动地铁筛选。请运行 scripts/build_subway.py 生成 "
+            "data/subway/shikar-subway.json，或用 --subway-geojson 指定；"
+            "若确需以无地铁状态启动，请加 --allow-no-subway。"
+        )
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"[警告] {message}")
+        return None
+    with open(geojson_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return subway.import_geojson(conn, payload, community_crs=community_crs)
+
+
 def run(argv: Optional[list[str]] = None) -> None:
     """启动本地服务：解析参数、打开数据库、按需播种、提供 API 与静态网页。
 
@@ -104,14 +155,47 @@ def run(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         prog="shikar.main", description="shikar 本地服务启动入口（零依赖）"
     )
-    parser.add_argument("--db", default="shikar.db", help="SQLite 数据库文件路径")
+    parser.add_argument(
+        "--db",
+        default=os.path.join(_REPO_ROOT, "data", "shikar.db"),
+        help="SQLite 数据库文件路径（默认仓库 data/shikar.db，与当前目录无关）",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="绑定地址（默认仅回环）")
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
-    parser.add_argument("--web-root", default="web", help="静态文件根目录")
+    parser.add_argument(
+        "--web-root",
+        default=os.path.join(_REPO_ROOT, "web"),
+        help="静态文件根目录（默认仓库 web/，与当前目录无关）",
+    )
     parser.add_argument("--seed", action="store_true", help="库为空时播种 Demo 数据")
+    parser.add_argument(
+        "--subway-geojson",
+        default=_DEFAULT_SUBWAY_GEOJSON,
+        help="地铁 GeoJSON 路径（默认仓库 data/subway/shikar-subway.json，与当前目录无关）；"
+        "相对路径按仓库根解析；库中尚无地铁表时启动自动导入",
+    )
+    parser.add_argument(
+        "--community-crs",
+        default="wgs84",
+        choices=["wgs84", "gcj02", "bd09"],
+        help="小区坐标的坐标系（须先核实；默认 wgs84）",
+    )
+    parser.add_argument(
+        "--allow-no-subway",
+        action="store_true",
+        help="默认情况下无地铁表且 GeoJSON 缺失会报错退出；加此项则以无地铁状态启动",
+    )
     args = parser.parse_args(argv)
 
-    conn = sqlite3.connect(args.db, check_same_thread=False)
+    # 显式相对路径统一按仓库根解析，避免 cd 到别处后找不到文件。
+    geojson_path = args.subway_geojson
+    if geojson_path and not os.path.isabs(geojson_path):
+        geojson_path = os.path.join(_REPO_ROOT, geojson_path)
+    db_path = args.db
+    if db_path and not os.path.isabs(db_path):
+        db_path = os.path.join(_REPO_ROOT, db_path)
+
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     storage.init_db(conn)
@@ -119,6 +203,22 @@ def run(argv: Optional[list[str]] = None) -> None:
     if args.seed and _is_empty(conn):
         stats = seed_demo(conn)
         print(f"已播种 Demo 数据：小区 {stats['xiaoqu']} 个，指标 {stats['metrics']} 行")
+
+    try:
+        report = ensure_subway(
+            conn, geojson_path, community_crs=args.community_crs,
+            strict=not args.allow_no_subway,
+        )
+    except FileNotFoundError as exc:
+        # 明确报错退出（默认行为），不让服务以缺地铁状态静默启动。
+        print(f"[错误] {exc}", file=sys.stderr)
+        conn.close()
+        raise SystemExit(2)
+    if report:
+        print(
+            "已导入地铁关系表：线路 {lines} 条、站点 {stations} 个、"
+            "有坐标小区 {communities_with_coordinates}（缺坐标 {communities_missing_coordinates}）".format(**report)
+        )
 
     server = create_server(conn, host=args.host, port=args.port, web_root=args.web_root)
     host, port = server.server_address[0], server.server_address[1]

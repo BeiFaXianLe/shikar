@@ -22,6 +22,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; min-height: 100%; }
+body { overflow-x: hidden; }
 
 body {
   color: var(--ink);
@@ -353,4 +354,162 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
 @media (max-width: 860px) {
   .catalog-filter { gap: 12px; }
   .page-head-aside { gap: 10px; }
+}
+
+/* ---------- 「找小区」页（P1 地铁沿线 + 价格） ---------- */
+.find-head { margin: 0 0 22px; padding-bottom: 16px; border-bottom: 2px solid var(--ink); }
+.find-head .eyebrow {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em;
+  color: var(--ink-soft); text-transform: uppercase; margin-bottom: 8px;
+}
+.find-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.find-title { font-family: var(--serif); font-size: 30px; font-weight: 700; margin: 0; letter-spacing: 0.02em; line-height: 1.2; }
+.find-sub { margin: 6px 0 0; color: var(--ink-soft); font-size: 14px; }
+
+/* 三主筛选 */
+.find-primary {
+  display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap;
+  padding: 0 0 18px; margin-bottom: 6px; border-bottom: 1px solid var(--rule);
+}
+.ff-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ff-field > label { font-size: 12px; color: var(--ink-soft); letter-spacing: 0.06em; }
+.ff-select, .ff-choice, .ff-input, .ff-price {
+  border: 1px solid var(--ink); border-radius: 0; background: transparent;
+  color: var(--ink); font-family: var(--serif); font-size: 15px; padding: 7px 12px;
+}
+.ff-select { min-width: 150px; cursor: pointer; }
+.ff-choice { min-width: 150px; text-align: left; cursor: pointer; letter-spacing: 0.02em; }
+.ff-choice:hover, .ff-select:hover { background: rgba(23,35,42,0.05); }
+.ff-select:focus, .ff-choice:focus, .ff-input:focus, .ff-price:focus { outline: 2px solid var(--cold); outline-offset: 1px; }
+.ff-price-pair { display: flex; align-items: center; gap: 8px; }
+.ff-price { width: 118px; font-family: var(--mono); font-size: 14px; }
+.ff-more {
+  font-family: var(--serif); font-size: 15px; color: var(--ink);
+  background: transparent; border: 1px solid var(--ink); border-radius: 0;
+  padding: 7px 18px; cursor: pointer; letter-spacing: 0.04em; align-self: flex-end;
+}
+.ff-more:hover { background: var(--ink); color: var(--paper-hi); }
+
+/* 手机筛选按钮（桌面隐藏） */
+.find-mobile-btn {
+  display: none; width: 100%; margin: 4px 0 10px; box-sizing: border-box;
+  border: 1px solid var(--ink); background: transparent; color: var(--ink);
+  border-radius: 0; padding: 12px 16px; cursor: pointer;
+  font-family: var(--serif); font-size: 15px;
+  justify-content: space-between; align-items: center; gap: 12px; overflow: hidden;
+}
+.find-mobile-btn > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.find-mobile-btn > span:last-child { flex: 1 1 auto; text-align: right; }
+
+/* chips */
+.find-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 0 6px; }
+.fc-label { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; margin-right: 2px; }
+.fc-chip {
+  font-family: var(--sans); font-size: 13px; color: var(--ink);
+  background: transparent; border: 1px solid var(--rule); border-left: 3px solid var(--cold);
+  border-radius: 0; padding: 3px 10px; cursor: pointer; letter-spacing: 0.02em;
+}
+.fc-chip:hover { border-color: var(--hot); border-left-color: var(--hot); color: var(--hot); }
+.fc-clear {
+  font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft);
+  background: transparent; border: none; border-bottom: 1px solid var(--rule);
+  cursor: pointer; padding: 2px 2px; letter-spacing: 0.04em;
+}
+.fc-clear:hover { color: var(--hot); border-bottom-color: var(--hot); }
+
+/* 结果 */
+.find-results { margin-top: 6px; }
+.find-results-bar {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 16px 0 8px; border-bottom: 1px solid var(--ink);
+}
+.find-results-bar h2 { font-family: var(--serif); font-size: 18px; font-weight: 700; margin: 0; letter-spacing: 0.06em; }
+.find-count { font-size: 13px; color: var(--ink-soft); font-family: var(--mono); letter-spacing: 0.03em; }
+
+.find-row {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 4px; border-bottom: 1px dotted var(--rule); border-left: none;
+  color: var(--ink);
+}
+.find-row:hover { background: rgba(23,35,42,0.035); }
+.find-row:hover .fr-name { color: var(--hot); }
+.fr-ordinal { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); min-width: 26px; flex-shrink: 0; }
+.fr-main { flex: 1 1 auto; min-width: 0; }
+.fr-name {
+  font-family: var(--serif); font-size: 18px; font-weight: 700; letter-spacing: 0.02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fr-loc { font-family: var(--sans); font-size: 12.5px; color: var(--ink-faint); font-weight: 400; margin-left: 10px; }
+.fr-meta { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px; font-size: 12.5px; color: var(--ink-soft); }
+.fr-price { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
+.fr-price-v { font-family: var(--serif); font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fr-mom { font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.fr-mom.up { color: var(--hot); }
+.fr-mom.down { color: var(--cold); }
+.find-empty { text-align: center; padding: 56px 20px; color: var(--ink-soft); }
+.find-empty h3 { font-family: var(--serif); font-size: 19px; margin: 0 0 8px; color: var(--ink); }
+.find-footnote { margin: 18px 0 0; font-size: 12.5px; color: var(--ink-faint); line-height: 1.6; }
+
+.find-pager { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--ink); }
+.find-pager .pg-summary { font-size: 13px; color: var(--ink-soft); font-family: var(--mono); margin-right: auto; }
+.find-pg-btn {
+  font-family: var(--serif); font-size: 14px; color: var(--ink);
+  background: transparent; border: 1px solid var(--ink); border-radius: 0;
+  padding: 6px 16px; cursor: pointer; letter-spacing: 0.04em;
+}
+.find-pg-btn:hover:not(:disabled) { background: var(--ink); color: var(--paper-hi); }
+.find-pg-btn:disabled { opacity: 0.4; cursor: default; }
+.find-pg-btn.primary { background: var(--ink); color: var(--paper-hi); }
+.find-pg-btn.primary:hover { background: var(--hot); border-color: var(--hot); }
+
+/* 分组抽屉 */
+.find-drawer {
+  border: none; padding: 0; max-width: 560px; width: calc(100% - 32px);
+  max-height: 88vh; background: var(--paper-hi); color: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+.find-drawer::backdrop { background: rgba(23,35,42,0.36); }
+.fd-inner { display: flex; flex-direction: column; max-height: 88vh; }
+.fd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 22px; border-bottom: 1px solid var(--ink); position: sticky; top: 0; background: var(--paper-hi); z-index: 2;
+}
+.fd-head h2 { font-family: var(--serif); font-size: 20px; margin: 0; letter-spacing: 0.06em; }
+.fd-close { background: none; border: none; font-size: 24px; line-height: 1; cursor: pointer; color: var(--ink-soft); }
+.fd-close:hover { color: var(--hot); }
+.fd-body { padding: 8px 22px 4px; overflow-y: auto; }
+.fd-group { padding: 16px 0; border-bottom: 1px solid var(--rule-soft); }
+.fd-group h3 { font-family: var(--serif); font-size: 15px; margin: 0 0 12px; letter-spacing: 0.04em; display: flex; align-items: center; gap: 8px; }
+.fd-group-num { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+.fd-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.fd-field > label { font-size: 12.5px; color: var(--ink-soft); letter-spacing: 0.04em; }
+.fd-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+.fd-check { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
+.fd-range-label { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--ink-soft); }
+.fd-range-out { font-family: var(--mono); color: var(--ink); font-size: 13px; }
+.fd-field input[type="range"] { width: 100%; accent-color: var(--cold); }
+.fd-note { font-size: 12px; color: var(--ink-faint); line-height: 1.6; margin: 8px 0 0; }
+.fd-error { color: var(--hot); font-size: 13px; margin: 8px 22px 0; min-height: 1em; }
+.fd-foot {
+  display: flex; gap: 12px; justify-content: flex-end;
+  padding: 14px 22px; border-top: 1px solid var(--ink); position: sticky; bottom: 0; background: var(--paper-hi);
+}
+
+@media (max-width: 860px) {
+  .find-primary { display: none; }
+  .find-mobile-btn { display: flex; }
+  .find-title { font-size: 24px; }
+  .fr-price-v { font-size: 18px; }
+  .fr-name { font-size: 16px; }
+  .find-drawer { max-width: 100%; width: 100%; max-height: 92vh; }
+  .fd-inner { max-height: 92vh; }
+}
+
+@media (max-width: 480px) {
+  .find-mobile-btn { font-size: 14px; padding: 11px 14px; }
+  .fr-meta { gap: 8px; font-size: 12px; }
+  .find-chips { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 10px; -webkit-overflow-scrolling: touch; }
+  .find-chips .fc-label { flex-shrink: 0; }
+  .fc-chip, .fc-clear { flex-shrink: 0; }
+  .fd-checks { grid-template-columns: 1fr; }
 }

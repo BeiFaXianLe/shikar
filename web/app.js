@@ -621,114 +621,305 @@
   // 小区目录
   // -------------------------------------------------------------------------
   /** 目录页每页条数。 */
-  var CATALOG_PAGE_SIZE = 50;
+  var CATALOG_PAGE_SIZE = 20;
 
-  /** 目录页状态（城市 / 区 / 关键词 / 页码 / 区列表）。 */
-  var catalogState = {
+  /** 「找小区」页筛选状态（城市 / 地铁 / 价格 / 名称 / 区 / 页码）。 */
+  var findState = {
     city: "",
-    district: "",
+    lines: [],          // 选中线路 id 列表
+    station: "",        // 指定站点 id
+    subwayMode: "station",
+    subwayMax: 1,       // km
+    priceMin: "",
+    priceMax: "",
+    priceWeek: "",      // 价格期次（空=全部期次，各期标注）
     q: "",
+    district: "",
     page: 1,
-    districts: [],
   };
+
+  /** 地铁线路数据缓存：{城市: {items, byCity}}；避免重复请求。 */
+  var subwayCache = {};
+
+  /** 拉取（并缓存）某城市的地铁线路与站点数据。 */
+  function loadSubwayLines(city) {
+    if (!city) return Promise.resolve([]);
+    if (subwayCache[city]) return Promise.resolve(subwayCache[city]);
+    return getJSON("/api/subway/lines" + buildQuery({ city: city }))
+      .then(function (data) {
+        var items = (data && data.items) || [];
+        subwayCache[city] = items;
+        return items;
+      })
+      .catch(function () { return []; });
+  }
 
   /** 格式化「区 · 板块」展示串（去空）。 */
   function locText(district, plate) {
     return [district, plate].filter(Boolean).join(" · ");
   }
 
+  /** 由 findState 组装 /api/catalog 查询参数（多线路用重复 line 键）。 */
+  function findParams(extra) {
+    var params = {
+      city: findState.city,
+      district: findState.district,
+      q: findState.q,
+      price_min: findState.priceMin,
+      price_max: findState.priceMax,
+      price_week: findState.priceWeek,
+      subway_mode: findState.subwayMode,
+      subway_max: (findState.lines.length || findState.station) ? findState.subwayMax : "",
+      station: findState.station,
+      page: findState.page,
+      page_size: CATALOG_PAGE_SIZE,
+      sort: (findState.lines.length || findState.station) ? "subway_distance" : "default",
+    };
+    Object.keys(extra || {}).forEach(function (k) { params[k] = extra[k]; });
+    return params;
+  }
+
+  /** 组装带重复 line 键的完整查询串。 */
+  function findQueryString() {
+    var params = findParams();
+    var parts = [];
+    Object.keys(params).forEach(function (k) {
+      var v = params[k];
+      if (v === null || v === undefined || v === "") return;
+      parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v));
+    });
+    findState.lines.forEach(function (lid) {
+      parts.push("line=" + encodeURIComponent(lid));
+    });
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  /** 价格展示：¥ 千分位；空值显示「—」。 */
+  function fmtPrice(v) {
+    return v === null || v === undefined || isNaN(Number(v)) ? "—" : "¥" + fmtNum(v, 0);
+  }
+
+  /**
+   * 用 URL 查询串重置「找小区」筛选状态（可分享链接）。
+   *
+   * P2-03：解析前先重置为默认，避免旧条件残留；支持 page / price_week；对非法百分号
+   * 编码（decodeURIComponent 抛 URIError）做容错，不让整页崩溃。
+   */
+  function applyFindQuery(queryStr) {
+    // 先重置为默认：哪些参数没给就回到默认，而非沿用上次残留。
+    findState.city = "";
+    findState.lines = [];
+    findState.station = "";
+    findState.subwayMode = "station";
+    findState.subwayMax = 1;
+    findState.priceMin = "";
+    findState.priceMax = "";
+    findState.priceWeek = "";
+    findState.q = "";
+    findState.district = "";
+    findState.page = 1;
+    if (!queryStr) return;
+
+    var params = {};
+    var lines = [];
+    function safeDecode(s) {
+      try { return decodeURIComponent(s); } catch (e) { return s; }
+    }
+    queryStr.split("&").forEach(function (pair) {
+      if (!pair) return;
+      var eq = pair.indexOf("=");
+      var k = safeDecode(eq < 0 ? pair : pair.slice(0, eq));
+      var v = safeDecode((eq < 0 ? "" : pair.slice(eq + 1)).replace(/\+/g, " "));
+      if (k === "line") { if (v) lines.push(v); }
+      else if (k) { params[k] = v; }
+    });
+    if (params.city !== undefined) findState.city = params.city;
+    findState.lines = lines;
+    if (params.subway_max !== undefined && params.subway_max !== "") {
+      var sm = Number(params.subway_max);
+      if (isFinite(sm) && sm > 0 && sm <= 5) findState.subwayMax = sm;
+    }
+    if (params.subway_mode === "line" || params.subway_mode === "station") {
+      findState.subwayMode = params.subway_mode;
+    }
+    // 单站深链（P2-4）：station 独立恢复，不依赖 lines 存在；后端对 station 单独生效。
+    // 站点归属城市/线路的关系由服务端 filter_sql 校验（非法站点会返回 400 并提示）。
+    if (params.station !== undefined && params.station !== "") {
+      findState.station = params.station;
+      if (findState.subwayMode === "line") findState.subwayMode = "station";
+    }
+    if (params.price_min !== undefined) findState.priceMin = params.price_min;
+    if (params.price_max !== undefined) findState.priceMax = params.price_max;
+    if (params.price_week !== undefined) findState.priceWeek = params.price_week;
+    if (params.q !== undefined) findState.q = params.q;
+    if (params.district !== undefined) findState.district = params.district;
+    if (params.page !== undefined) {
+      var pg = parseInt(params.page, 10);
+      findState.page = (isFinite(pg) && pg > 0) ? pg : 1;
+    }
+  }
+
   function renderCatalog() {
-    var state = catalogState;
     appEl.innerHTML = "";
 
-    var head = el("div", { class: "page-head" }, [
-      el("h1", { text: "小区目录" }),
-      el("div", { class: "page-head-aside" }, [
-        el("a", { class: "catalog-entry", href: "#/", text: "← 返回总览" }),
-      ]),
-    ]);
-    appEl.appendChild(head);
+    // —— 页眉 ——
+    appEl.appendChild(
+      el("div", { class: "find-head" }, [
+        el("div", { class: "eyebrow", text: "01 / COMMUNITY EXPLORER" }),
+        el("div", { class: "find-head-row" }, [
+          el("div", {}, [
+            el("h1", { class: "find-title", text: "围绕生活，找到一个小区。" }),
+            el("p", { class: "find-sub", text: "地铁沿线与参考均价，把重要的偏好放在一起。" }),
+          ]),
+          el("a", { class: "catalog-entry", href: "#/", text: "← 返回总览" }),
+        ]),
+      ])
+    );
 
-    // 过滤条
-    var citySelect = el("select", { class: "district-select", "aria-label": "城市" }, [
+    // —— 三主筛选 ——
+    var citySelect = el("select", { class: "ff-select", "aria-label": "城市" }, [
       el("option", { value: "", text: "全部城市" }),
       el("option", { value: "北京", text: "北京" }),
       el("option", { value: "天津", text: "天津" }),
     ]);
-    citySelect.value = state.city;
+    citySelect.value = findState.city;
 
-    var districtSelect = el("select", { class: "district-select", "aria-label": "区" }, [
-      el("option", { value: "", text: "全部区" }),
-    ]);
-    districtSelect.value = state.district;
-    districtSelect.disabled = !state.city;
-
-    var qInput = el("input", {
-      type: "search",
-      class: "catalog-input",
-      placeholder: "搜索小区名（支持部分匹配）",
-      "aria-label": "搜索小区名",
-      value: state.q,
+    var lineSummary = el("button", {
+      class: "ff-choice", type: "button", id: "choose-lines",
+      text: linesSummaryText(),
     });
 
-    var searchBtn = el("button", { class: "catalog-btn", type: "button", text: "搜索" });
+    var priceMin = el("input", {
+      type: "number", min: "0", class: "ff-price", "aria-label": "最低均价",
+      placeholder: "不限", value: findState.priceMin,
+    });
+    var priceMax = el("input", {
+      type: "number", min: "0", class: "ff-price", "aria-label": "最高均价",
+      placeholder: "不限", value: findState.priceMax,
+    });
 
-    var filterBar = el("form", { class: "catalog-filter", role: "search" }, [
-      el("div", { class: "cf-field" }, [el("label", { text: "城市" }), citySelect]),
-      el("div", { class: "cf-field" }, [el("label", { text: "区" }), districtSelect]),
-      el("div", { class: "cf-field cf-grow" }, [el("label", { text: "搜索" }), qInput]),
-      el("div", { class: "cf-field cf-actions" }, [searchBtn]),
+    var mainFilters = el("div", { class: "find-primary" }, [
+      el("div", { class: "ff-field" }, [el("label", { text: "01 / 城市" }), citySelect]),
+      el("div", { class: "ff-field" }, [el("label", { text: "02 / 地铁线路" }), lineSummary]),
+      el("div", { class: "ff-field" }, [
+        el("label", { text: "03 / 参考均价（元/㎡）" }),
+        el("div", { class: "ff-price-pair" }, [priceMin, el("span", { text: "—" }), priceMax]),
+      ]),
+      el("button", { class: "ff-more", type: "button", id: "more-filters", text: "更多条件 ＋" }),
     ]);
-    appEl.appendChild(filterBar);
+    appEl.appendChild(mainFilters);
 
-    var resultHost = el("div", { class: "catalog-results" });
+    // 手机筛选按钮
+    appEl.appendChild(
+      el("button", { class: "find-mobile-btn", type: "button", id: "mobile-filters" }, [
+        el("span", { text: "☷　筛选" }),
+        el("span", { class: "find-mobile-more", text: "更多条件 →" }),
+      ])
+    );
+
+    // —— chips（已选条件）——
+    var chipHost = el("div", { class: "find-chips" });
+    appEl.appendChild(chipHost);
+
+    // —— 结果区 ——
+    var resultHost = el("div", { class: "find-results" });
     appEl.appendChild(resultHost);
 
-    // 填充区下拉
-    function fillDistricts(rows) {
-      districtSelect.innerHTML = "";
-      districtSelect.appendChild(el("option", { value: "", text: "全部区" }));
-      (rows || []).forEach(function (r) {
-        if (!r || !r.district) return;
-        districtSelect.appendChild(el("option", { value: r.district, text: r.district }));
-      });
-      // 若当前选中区已不在列表里，重置。
-      var exists = (rows || []).some(function (r) { return r && r.district === state.district; });
-      if (!exists) state.district = "";
-      districtSelect.value = state.district;
-      districtSelect.disabled = (rows || []).length === 0;
+    function linesSummaryText() {
+      if (!findState.lines.length) return "不限线路　⌄";
+      return findState.lines.length + " 条线路　⌄";
     }
 
-    function loadDistricts() {
-      if (!state.city) {
-        fillDistricts([]);
-        districtSelect.disabled = true;
-        return;
+    function lineNameOf(lid) {
+      var items = subwayCache[findState.city] || [];
+      for (var i = 0; i < items.length; i++) if (items[i].id === lid) return items[i].name;
+      return lid;
+    }
+
+    function renderChips() {
+      chipHost.innerHTML = "";
+      var items = [];
+      if (findState.city) items.push(["city", findState.city]);
+      findState.lines.forEach(function (lid) { items.push(["line:" + lid, lineNameOf(lid)]); });
+      if (findState.priceMin || findState.priceMax) {
+        items.push(["price", (findState.priceMin || "不限") + "–" + (findState.priceMax || "不限") + " 元/㎡"]);
       }
-      fetchDistricts(state.city).then(function (rows) {
-        state.districts = rows || [];
-        fillDistricts(state.districts);
+      if (findState.priceWeek) items.push(["priceweek", "期次：" + findState.priceWeek]);
+      if (findState.lines.length || findState.station) {
+        var mode = findState.subwayMode === "line"
+          ? "距线路" : (findState.station ? stationNameOf(findState.station) : "距站");
+        items.push(["radius", mode + " ≤ " + findState.subwayMax + " km"]);
+      }
+      if (findState.district) items.push(["district", "区：" + findState.district]);
+      if (findState.q) items.push(["q", "名称：" + findState.q]);
+      if (!items.length) { chipHost.style.display = "none"; return; }
+      chipHost.style.display = "";
+      chipHost.appendChild(el("span", { class: "fc-label", text: "已选条件" }));
+      items.forEach(function (pair) {
+        var removable = pair[0] !== "city";
+        chipHost.appendChild(
+          el("button", {
+            class: "fc-chip", type: "button", "data-remove": pair[0],
+            text: pair[1] + (removable ? " ×" : ""),
+          })
+        );
       });
+      chipHost.appendChild(
+        el("button", { class: "fc-clear", type: "button", id: "clear-all", text: "清除其他条件" })
+      );
+      chipHost.querySelectorAll("[data-remove]").forEach(function (b) {
+        b.addEventListener("click", function () { removeChip(b.getAttribute("data-remove")); });
+      });
+      var clearAll = chipHost.querySelector("#clear-all");
+      if (clearAll) clearAll.addEventListener("click", clearOthers);
     }
 
-    function loadPage(page) {
-      state.page = page < 1 ? 1 : page;
+    function stationNameOf(sid) {
+      var items = subwayCache[findState.city] || [];
+      for (var i = 0; i < items.length; i++) {
+        var st = items[i].stations || [];
+        for (var j = 0; j < st.length; j++) if (st[j].id === sid) return st[j].name;
+      }
+      return "指定站";
+    }
+
+    function removeChip(key) {
+      if (key.indexOf("line:") === 0) {
+        var lid = key.slice(5);
+        findState.lines = findState.lines.filter(function (x) { return x !== lid; });
+        findState.station = "";
+      } else if (key === "price") {
+        findState.priceMin = ""; findState.priceMax = "";
+      } else if (key === "priceweek") {
+        findState.priceWeek = "";
+      } else if (key === "radius") {
+        findState.subwayMax = 1; findState.subwayMode = "station"; findState.station = "";
+      } else if (key === "district") {
+        findState.district = "";
+      } else if (key === "q") {
+        findState.q = "";
+      }
+      findState.page = 1;
+      refreshAll();
+    }
+
+    function clearOthers() {
+      findState.lines = []; findState.station = "";
+      findState.priceMin = ""; findState.priceMax = ""; findState.priceWeek = "";
+      findState.subwayMax = 1; findState.subwayMode = "station";
+      findState.district = ""; findState.q = "";
+      findState.page = 1;
+      refreshAll();
+    }
+
+    function loadPage() {
       resultHost.innerHTML = "";
       resultHost.appendChild(stateNode("loading", "正在加载小区…"));
-      var params = {
-        city: state.city,
-        district: state.district,
-        q: state.q,
-        page: state.page,
-        page_size: CATALOG_PAGE_SIZE,
-      };
-      getJSON("/api/catalog" + buildQuery(params))
-        .then(function (data) {
-          paintResults(data);
-        })
+      getJSON("/api/catalog" + findQueryString())
+        .then(function (data) { paintResults(data); })
         .catch(function (err) {
           resultHost.innerHTML = "";
-          resultHost.appendChild(stateNode("error", "目录加载失败：" + err.message));
+          resultHost.appendChild(stateNode("error", "加载失败：" + err.message));
         });
     }
 
@@ -739,96 +930,413 @@
       var pageSize = (data && data.page_size) || CATALOG_PAGE_SIZE;
       var page = (data && data.page) || 1;
       var totalPages = Math.max(1, Math.ceil(total / pageSize));
+      var periods = (data && data.price_periods) || [];
+
+      var bar = el("div", { class: "find-results-bar" }, [
+        el("h2", { text: "小区目录" }),
+        el("span", { class: "find-count", "aria-live": "polite", text: total + " 个匹配结果" }),
+      ]);
+      // 期次口径（P1-03）：可切换「全部期次」或单期，明确价格比较口径。
+      if (periods.length > 1 || (periods.length === 1 && periods[0].week)) {
+        var periodSel = el("select", { class: "find-period-select", "aria-label": "价格期次" });
+        periodSel.appendChild(el("option", { value: "", text: "全部期次（价格各不相同期，标注见各行）" }));
+        periods.forEach(function (p) {
+          var o = el("option", { value: p.week, text: p.week + " · " + p.communities + " 个小区" });
+          if (p.week === findState.priceWeek) o.selected = true;
+          periodSel.appendChild(o);
+        });
+        periodSel.addEventListener("change", function () {
+          findState.priceWeek = periodSel.value;
+          findState.page = 1;
+          refreshAll();
+        });
+        bar.appendChild(periodSel);
+      }
+      resultHost.appendChild(bar);
 
       if (items.length === 0) {
-        resultHost.appendChild(stateNode("empty", "没有匹配的小区"));
+        resultHost.appendChild(
+          el("div", { class: "find-empty" }, [
+            el("h3", { text: "没有满足这些偏好的小区" }),
+            el("p", { text: "放宽地铁距离或价格，或删除一个条件再试试。" }),
+          ])
+        );
         appendPager(resultHost, total, page, totalPages);
         return;
       }
 
-      var list = el("ol", { class: "catalog-list" });
-      items.forEach(function (it) {
-        var loc = locText(it.district, it.plate);
-        var href = "#/xiaoqu/" + encodeURIComponent(it.id);
-        var rowMeta = el("div", { class: "cl-meta" }, [
-          el("span", { class: "cl-loc", text: loc || "—" }),
-          el("span", { class: "cl-dp", text: (it.data_points == null ? 0 : it.data_points) + " 期" }),
-        ]);
-        var priceText = it.latest_price === null || it.latest_price === undefined
-          ? "—"
-          : "¥" + fmtNum(it.latest_price, 0);
-        var momText = "";
-        if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
-          momText = fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
-        }
-        var priceBox = el("div", { class: "cl-price" }, [
-          el("span", { class: "cl-price-v", text: priceText }),
-          momText ? el("span", { class: "cl-mom" + (Number(it.latest_mom) >= 0 ? " up" : " down"), text: "近月 " + momText }) : null,
-        ]);
-        var main = el("div", { class: "cl-main" }, [
-          el("div", { class: "cl-name", text: it.name || it.id || "—" }),
-          rowMeta,
-        ]);
-        list.appendChild(
-          el("li", { class: "catalog-item" }, [
-            el("a", { class: "cl-link", href: href }, [main, priceBox]),
-          ])
-        );
+      var startIndex = (page - 1) * pageSize;
+      items.forEach(function (it, i) {
+        resultHost.appendChild(communityRow(it, startIndex + i + 1));
       });
-      resultHost.appendChild(list);
       appendPager(resultHost, total, page, totalPages);
+      resultHost.appendChild(
+        el("p", { class: "find-footnote", text: "价格为各小区最新一期参考均价并标注期次；「历史」表示该小区最新记录早于全库最新期次。直线距离不等于步行或通勤距离；附近地铁不代表通勤时间。" })
+      );
+    }
+
+    function communityRow(it, ordinal) {
+      var loc = locText(it.district, it.plate);
+      var sub = it.features && it.features.subway;
+      var meta = [];
+      if (sub) {
+        // P2-05：按口径显示「距线路走向」或「距某站」，不把线路距离写成站名距离。
+        var where = sub.mode === "line" ? "距线路走向" : "距" + sub.station_name;
+        meta.push("▪ " + sub.line_name + " · " + where + "　" + fmtNum(sub.distance_km, 2) + " km");
+      }
+      if (it.data_points != null) meta.push(it.data_points + " 期行情");
+      var priceText = fmtPrice(it.latest_price);
+      var momText = "";
+      if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
+        momText = "近月 " + fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
+      }
+      // P1-03/P1-1：每条价格标注期次与来源；非全库最新一期显式标「历史」。
+      var periodNode = null;
+      var srcWeek = it.price_source_week || it.latest_week;
+      if (srcWeek) {
+        periodNode = el("span", {
+          class: "fr-period" + (it.price_is_current ? "" : " fr-period-hist"),
+          text: "价源：" + srcWeek + (it.price_source ? " · " + it.price_source : "") + (it.price_is_current ? "" : "（历史）"),
+        });
+      }
+      var href = "#/xiaoqu/" + encodeURIComponent(it.id);
+      var row = el("a", { class: "find-row", href: href }, [
+        el("span", { class: "fr-ordinal", text: ordinal < 10 ? "0" + ordinal : "" + ordinal }),
+        el("div", { class: "fr-main" }, [
+          el("div", { class: "fr-name" }, [
+            document.createTextNode(it.name || it.id || "—"),
+            el("span", { class: "fr-loc", text: loc || "" }),
+          ]),
+          el("div", { class: "fr-meta" }, meta.map(function (t) { return el("span", { text: t }); })),
+        ]),
+        el("div", { class: "fr-price" }, [
+          el("span", { class: "fr-price-v", text: priceText }),
+          periodNode,
+          momText
+            ? el("span", { class: "fr-mom" + (Number(it.latest_mom) >= 0 ? " up" : " down"), text: momText })
+            : null,
+        ]),
+      ]);
+      return row;
     }
 
     function appendPager(host, total, page, totalPages) {
-      var pager = el("div", { class: "catalog-pager" });
-      pager.appendChild(
-        el("span", { class: "pg-summary", text: "共 " + total + " 个 · 第 " + page + " / " + totalPages + " 页" })
-      );
-      var prev = el("button", {
-        class: "catalog-btn pg-prev", type: "button", text: "上一页",
-      });
+      var pager = el("div", { class: "find-pager" }, [
+        el("span", { class: "pg-summary", text: "共 " + total + " 个小区 · 第 " + page + " / " + totalPages + " 页" }),
+      ]);
+      var prev = el("button", { class: "find-pg-btn", type: "button", text: "← 上一页" });
       if (page <= 1) prev.disabled = true;
-      prev.addEventListener("click", function () { if (page > 1) loadPage(page - 1); });
-
-      var next = el("button", {
-        class: "catalog-btn pg-next", type: "button", text: "下一页",
-      });
+      prev.addEventListener("click", function () { if (page > 1) { findState.page = page - 1; syncFindHash(); loadPage(); scrollTop(); } });
+      var next = el("button", { class: "find-pg-btn", type: "button", text: "下一页 →" });
       if (page >= totalPages) next.disabled = true;
-      next.addEventListener("click", function () { if (page < totalPages) loadPage(page + 1); });
-
+      next.addEventListener("click", function () { if (page < totalPages) { findState.page = page + 1; syncFindHash(); loadPage(); scrollTop(); } });
       pager.appendChild(prev);
       pager.appendChild(next);
       host.appendChild(pager);
     }
 
-    // 事件绑定
-    citySelect.addEventListener("change", function () {
-      state.city = citySelect.value;
-      state.district = "";
-      state.page = 1;
-      loadDistricts();
-      loadPage(1);
-    });
-    districtSelect.addEventListener("change", function () {
-      state.district = districtSelect.value;
-      state.page = 1;
-      loadPage(1);
-    });
-    function submitSearch(ev) {
-      if (ev) ev.preventDefault();
-      state.q = qInput.value.trim();
-      state.page = 1;
-      loadPage(1);
-    }
-    searchBtn.addEventListener("click", submitSearch);
-    filterBar.addEventListener("submit", submitSearch);
-    qInput.addEventListener("keydown", function (ev) {
-      if (ev.key === "Enter") submitSearch(ev);
-    });
+    function scrollTop() { try { window.scrollTo(0, 0); } catch (e) {} }
 
-    // 首次加载
-    if (state.city) loadDistricts();
-    loadPage(state.page);
+    /** P2-04：把 findState 同步回桌面主筛选控件（抽屉应用/删 chip 后保持同步）。 */
+    function syncMainControls() {
+      if (citySelect) citySelect.value = findState.city || "";
+      if (priceMin) priceMin.value = findState.priceMin || "";
+      if (priceMax) priceMax.value = findState.priceMax || "";
+      if (lineSummary) lineSummary.textContent = linesSummaryText();
+    }
+
+    function refreshAll() {
+      syncMainControls();
+      renderChips();
+      syncFindHash();
+      loadPage();
+    }
+
+    function syncFindHash() {
+      // 用 replaceState 同步可分享链接，避免触发 hashchange 重渲染。
+      try {
+        var qs = findQueryString().replace(/^\?/, "");
+        history.replaceState(null, "", "#/catalog" + (qs ? "?" + qs : ""));
+      } catch (e) { /* 忽略（历史 API 不可用时不影响功能） */ }
+    }
+
+    // —— 事件：主筛选 ——
+    citySelect.addEventListener("change", function () {
+      findState.city = citySelect.value;
+      findState.lines = []; findState.station = ""; findState.district = "";
+      findState.page = 1;
+      loadSubwayLines(findState.city).then(refreshAll);
+    });
+    function applyPrice() {
+      findState.priceMin = priceMin.value.trim();
+      findState.priceMax = priceMax.value.trim();
+      findState.page = 1;
+      refreshAll();
+    }
+    priceMin.addEventListener("change", applyPrice);
+    priceMax.addEventListener("change", applyPrice);
+    function openDrawer() { openFindDrawer(refreshAll); }
+    lineSummary.addEventListener("click", openDrawer);
+    appEl.querySelector("#more-filters").addEventListener("click", openDrawer);
+    appEl.querySelector("#mobile-filters").addEventListener("click", openDrawer);
+
+    // 首次：先补齐地铁线路缓存，再渲染 chips 与结果。
+    loadSubwayLines(findState.city).then(function () {
+      renderChips();
+      loadPage();
+      // 深链演示：带 ?drawer=1 时自动打开「更多条件」抽屉。
+      if (findHashHasFlag("drawer")) { try { openDrawer(); } catch (e) {} }
+    });
+  }
+
+  /** 当前 hash 查询串是否含某布尔标志（如 drawer=1）。 */
+  function findHashHasFlag(flag) {
+    var h = window.location.hash || "";
+    var qi = h.indexOf("?");
+    if (qi < 0) return false;
+    return h.slice(qi + 1).split("&").some(function (p) { return p === flag + "=1"; });
+  }
+
+  // -------------------------------------------------------------------------
+  // 「更多条件」分组抽屉（地铁 / 区域与名称）
+  // -------------------------------------------------------------------------
+  var findDrawerEl = null;
+
+  function ensureFindDrawer() {
+    if (findDrawerEl) return findDrawerEl;
+    var dlg = el("dialog", { class: "find-drawer" });
+    dlg.appendChild(el("div", { class: "fd-inner" }));
+    // 键盘可关闭：Escape 关闭抽屉（取消，不改结果）。
+    dlg.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); dlg.close(); }
+    });
+    document.body.appendChild(dlg);
+    findDrawerEl = dlg;
+    return dlg;
+  }
+
+  function openFindDrawer(onApply) {
+    var dlg = ensureFindDrawer();
+    // 草稿：独立于 findState，取消不改结果。P1-04：价格等所有可编辑条件都进草稿，
+    // 重绘（勾线路/切口径/异步区列表返回）不会清空未应用的值，并保留焦点与滚动。
+    var draft = {
+      city: findState.city,
+      lines: findState.lines.slice(),
+      station: findState.station,
+      subwayMode: findState.subwayMode,
+      subwayMax: findState.subwayMax,
+      priceMin: findState.priceMin,
+      priceMax: findState.priceMax,
+      districts: [],
+      district: findState.district,
+      q: findState.q,
+      error: "",
+    };
+
+    function render(preserveFocusId, preserveScroll) {
+      var inner = dlg.querySelector(".fd-inner");
+      var bodyPrev = inner.querySelector(".fd-body");
+      if (preserveScroll == null && bodyPrev) preserveScroll = bodyPrev.scrollTop;
+      // 重绘前捕获当前焦点元素（id）及其输入光标 selection，重绘后恢复。
+      // 用 document.activeElement + getElementById，避免把含冒号的线路 id 拼成
+      // 非法 CSS 选择器（P2-3）。applyFocusId 用于「操作后主动聚焦某控件」。
+      var savedFocusId = preserveFocusId;
+      var savedSel = null;
+      var active = document.activeElement;
+      if (active && active.id && inner.contains(active)) {
+        if (!savedFocusId) savedFocusId = active.id;
+        try {
+          if (typeof active.selectionStart === "number") {
+            savedSel = [active.selectionStart, active.selectionEnd];
+          }
+        } catch (e) { savedSel = null; }
+      }
+      inner.innerHTML = "";
+      var body = el("div", { class: "fd-body" });
+      var head = el("div", { class: "fd-head" }, [
+        el("h2", { text: "筛选条件" }),
+        el("button", { class: "fd-close", type: "button", "aria-label": "关闭", text: "×" }),
+      ]);
+      head.querySelector(".fd-close").addEventListener("click", function () { dlg.close(); });
+      inner.appendChild(head);
+
+      // 城市与价格（移动端主区）——价格读自草稿并在输入时写回草稿。
+      var citySel = el("select", { class: "ff-select", "aria-label": "筛选城市" }, [
+        el("option", { value: "", text: "全部城市" }),
+        el("option", { value: "北京", text: "北京" }),
+        el("option", { value: "天津", text: "天津" }),
+      ]);
+      citySel.value = draft.city;
+      var dMin = el("input", { type: "number", min: "0", id: "fd-price-min", class: "ff-price", "aria-label": "筛选最低均价", placeholder: "不限", value: draft.priceMin });
+      var dMax = el("input", { type: "number", min: "0", id: "fd-price-max", class: "ff-price", "aria-label": "筛选最高均价", placeholder: "不限", value: draft.priceMax });
+      dMin.addEventListener("input", function () { draft.priceMin = dMin.value; });
+      dMax.addEventListener("input", function () { draft.priceMax = dMax.value; });
+      body.appendChild(group("00", "城市与价格", [
+        fieldRow("城市", citySel),
+        fieldRow("参考均价（元/㎡）", el("div", { class: "ff-price-pair" }, [dMin, el("span", { text: "—" }), dMax])),
+      ]));
+
+      // 地铁分组
+      var lineList = subwayCache[draft.city] || [];
+      var lineChecks = el("div", { class: "fd-checks" });
+      lineList.forEach(function (l) {
+        var cb = el("input", { type: "checkbox" });
+        cb.checked = draft.lines.indexOf(l.id) >= 0;
+        cb.value = l.id;
+        cb.addEventListener("change", function () {
+          if (cb.checked) { if (draft.lines.indexOf(l.id) < 0) draft.lines.push(l.id); }
+          else { draft.lines = draft.lines.filter(function (x) { return x !== l.id; }); }
+          draft.station = "";
+          render("fd-line-" + l.id);
+        });
+        cb.id = "fd-line-" + l.id;
+        lineChecks.appendChild(el("label", { class: "fd-check" }, [cb, document.createTextNode(l.name)]));
+      });
+      if (!lineList.length) lineChecks.appendChild(el("p", { class: "fd-note", text: "该城市尚未导入地铁数据。" }));
+
+      // 站点下拉：所选线路全部站点并集
+      var stationSet = {};
+      lineList.forEach(function (l) {
+        if (draft.lines.indexOf(l.id) < 0) return;
+        (l.stations || []).forEach(function (s) { stationSet[s.id] = s.name; });
+      });
+      var stationSel = el("select", { class: "ff-select", "aria-label": "地铁站点" });
+      stationSel.appendChild(el("option", { value: "", text: "所选线路全部站点" }));
+      Object.keys(stationSet).forEach(function (sid) {
+        var o = el("option", { value: sid, text: stationSet[sid] });
+        if (sid === draft.station) o.selected = true;
+        stationSel.appendChild(o);
+      });
+      stationSel.disabled = !(draft.lines.length) || draft.subwayMode === "line";
+      stationSel.id = "fd-station";
+      stationSel.addEventListener("change", function () { draft.station = stationSel.value; });
+
+      var modeSel = el("select", { class: "ff-select", "aria-label": "地铁距离口径" }, [
+        el("option", { value: "station", text: "距地铁站" }),
+        el("option", { value: "line", text: "距线路走向" }),
+      ]);
+      modeSel.value = draft.subwayMode;
+      modeSel.addEventListener("change", function () { draft.subwayMode = modeSel.value; draft.station = ""; render("fd-mode"); });
+      modeSel.id = "fd-mode";
+
+      var maxOut = el("output", { class: "fd-range-out", text: Number(draft.subwayMax).toFixed(1) + " km" });
+      var maxRange = el("input", { type: "range", min: "0.1", max: "5", step: "0.1", id: "fd-submax", value: String(draft.subwayMax), "aria-label": "最大地铁距离" });
+      maxRange.addEventListener("input", function () {
+        draft.subwayMax = Number(maxRange.value);
+        maxOut.textContent = Number(draft.subwayMax).toFixed(1) + " km";
+      });
+
+      body.appendChild(
+        group("01", "地铁出行", [
+          fieldRow("线路 · 可多选", lineChecks),
+          fieldRow("站点", stationSel),
+          fieldRow("距离口径", modeSel),
+          el("div", { class: "fd-field" }, [
+            el("div", { class: "fd-range-label" }, [el("label", { text: "最大直线距离" }), maxOut]),
+            maxRange,
+          ]),
+          el("p", { class: "fd-note", text: "同一线路取任一满足即可；不同类别条件需同时满足。" }),
+        ])
+      );
+
+      // 区域与名称
+      var districtSel = el("select", { class: "ff-select", "aria-label": "行政区", id: "fd-district" });
+      districtSel.appendChild(el("option", { value: "", text: "全部行政区" }));
+      (draft.districts || []).forEach(function (r) {
+        var o = el("option", { value: r.district, text: r.district });
+        if (r.district === draft.district) o.selected = true;
+        districtSel.appendChild(o);
+      });
+      districtSel.disabled = !draft.city;
+      districtSel.addEventListener("change", function () { draft.district = districtSel.value; });
+      var qInput = el("input", { type: "search", class: "ff-input", "aria-label": "小区名称", placeholder: "输入关键词", id: "fd-q", value: draft.q || "" });
+      qInput.addEventListener("input", function () { draft.q = qInput.value; });
+      body.appendChild(group("02", "区域与名称", [
+        fieldRow("行政区", districtSel),
+        fieldRow("小区名称", qInput),
+      ]));
+
+      body.appendChild(el("p", { class: "fd-note", text: "直线距离仅作位置参考；关闭抽屉不会应用修改。" }));
+      inner.appendChild(body);
+
+      var errEl = el("p", { class: "fd-error", id: "fd-error", role: "alert" });
+      inner.appendChild(errEl);
+      inner.appendChild(
+        el("div", { class: "fd-foot" }, [
+          el("button", { class: "find-pg-btn", type: "button", text: "取消", onclick: function () { dlg.close(); } }),
+          el("button", { class: "find-pg-btn primary", type: "button", text: "应用条件", id: "fd-apply" }),
+        ])
+      );
+      inner.querySelector("#fd-apply").addEventListener("click", function () {
+        var err = validateDraft(draft.priceMin, draft.priceMax);
+        if (err) { errEl.textContent = err; return; }
+        findState.city = draft.city;
+        findState.lines = draft.lines.slice();
+        findState.station = draft.station;
+        findState.subwayMode = draft.subwayMode;
+        findState.subwayMax = draft.subwayMax;
+        findState.priceMin = (draft.priceMin || "").trim();
+        findState.priceMax = (draft.priceMax || "").trim();
+        findState.district = draft.district;
+        findState.q = (draft.q || "").trim();
+        findState.page = 1;
+        loadSubwayLines(findState.city).then(function () {
+          dlg.close();
+          if (typeof onApply === "function") onApply();
+        });
+      });
+
+      // 城市变化：重置线路并重载该城市线路与区。
+      citySel.addEventListener("change", function () {
+        draft.city = citySel.value;
+        draft.lines = []; draft.station = ""; draft.district = "";
+        loadSubwayLines(draft.city).then(function () {
+          fetchDistricts(draft.city).then(function (rows) { draft.districts = rows || []; render(); });
+        });
+      });
+      citySel.id = "fd-city";
+
+      // 重绘后恢复滚动与焦点（P2-3：重绘不丢焦点/光标 selection）。
+      if (bodyPrev) { /* body 节点已替换 */ }
+      body.scrollTop = preserveScroll || 0;
+      if (savedFocusId) {
+        try {
+          var focusEl = document.getElementById(savedFocusId);
+          if (focusEl && inner.contains(focusEl)) {
+            focusEl.focus();
+            if (savedSel && typeof focusEl.setSelectionRange === "function") {
+              try { focusEl.setSelectionRange(savedSel[0], savedSel[1]); } catch (e) {}
+            }
+          }
+        } catch (e) { /* 忽略焦点恢复异常，不影响功能 */ }
+      }
+    }
+
+    function validateDraft(minV, maxV) {
+      if (minV !== "" && (isNaN(Number(minV)) || Number(minV) < 0)) return "最低均价请输入非负数。";
+      if (maxV !== "" && (isNaN(Number(maxV)) || Number(maxV) < 0)) return "最高均价请输入非负数。";
+      if (minV !== "" && maxV !== "" && Number(minV) > Number(maxV)) return "最低均价不能超过最高均价。";
+      return "";
+    }
+
+    render();
+    fetchDistricts(draft.city).then(function (rows) {
+      draft.districts = rows || [];
+      render();
+    });
+    if (!dlg.open) dlg.showModal();
+  }
+
+  /** 抽屉内一个分组区块。 */
+  function group(num, title, children) {
+    return el("section", { class: "fd-group" }, [
+      el("h3", {}, [el("span", { class: "fd-group-num", text: num }), document.createTextNode(title)]),
+    ].concat(children));
+  }
+
+  /** 抽屉内一行：标签 + 控件。 */
+  function fieldRow(label, control) {
+    return el("div", { class: "fd-field" }, [el("label", { text: label }), control]);
   }
 
   // -------------------------------------------------------------------------
@@ -1125,7 +1633,11 @@
     var raw = window.location.hash || "#/";
     var path = raw.replace(/^#/, "");
     if (path === "" || path === "/") return { name: "home" };
-    if (path === "/catalog") return { name: "catalog" };
+    // 支持 #/catalog?line=..&subway_max=.. 的可分享筛选链接。
+    var qIdx = path.indexOf("?");
+    var queryStr = "";
+    if (qIdx >= 0) { queryStr = path.slice(qIdx + 1); path = path.slice(0, qIdx); }
+    if (path === "/catalog") return { name: "catalog", query: queryStr };
     var m = path.match(/^\/xiaoqu\/(.+)$/);
     if (m) return { name: "detail", id: decodeURIComponent(m[1]) };
     return { name: "unknown", raw: path };
@@ -1136,6 +1648,7 @@
     if (r.name === "home") {
       renderOverview();
     } else if (r.name === "catalog") {
+      applyFindQuery(r.query);
       renderCatalog();
     } else if (r.name === "detail") {
       renderDetail(r.id);
