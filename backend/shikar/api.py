@@ -46,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import catalog, overview, storage, subway
+from . import catalog, commute, overview, storage, subway
 
 __all__ = ["create_server", "make_handler"]
 
@@ -264,6 +264,69 @@ def _route(
         city = _first(qs, "city")
         district = _first(qs, "district")
         return 200, storage.list_xiaoqu(conn, city=city, district=district)
+
+    # /api/commute  （双点加权通勤：OSRM 驾车 + 缓存）
+    if path == "/api/commute":
+        from_a = _first(qs, "fromA")
+        from_b = _first(qs, "fromB")
+        mode = _first(qs, "mode") or "driving"
+        if not from_a or not from_b:
+            return 400, {"error": "需要 fromA 与 fromB 两个地点"}
+        if mode != "driving":
+            return 400, {"error": "当前仅支持驾车（mode=driving）"}
+        try:
+            w = _strict_float(qs, "w", "权重")
+            school_max = _strict_float(qs, "school_max", "学校距离")
+            hospital_max = _strict_float(qs, "hospital_max", "医院距离")
+            hsr_max = _strict_float(qs, "hsr_max", "高铁距离")
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        weight = 0.5 if w is None else max(0.0, min(1.0, w))
+        limit = _first_int(qs, "limit") or 20
+        limit = max(1, min(200, limit))
+        city = _first(qs, "city")
+        a = commute.resolve_place(from_a, city)
+        b = commute.resolve_place(from_b, city)
+        if not a or not b:
+            return 400, {"error": "无法解析地点，请换个更具体的名称"}
+        try:
+            res = catalog.query_catalog(
+                conn, city=city, district=_first(qs, "district"), page=1, page_size=200,
+                stage=_first(qs, "stage"), school_max=school_max,
+                grade=_first(qs, "grade"), hospital_max=hospital_max, hsr_max=hsr_max,
+            )
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        ids = [it["id"] for it in res["items"]]
+        meta = {it["id"]: it for it in res["items"]}
+        if ids:
+            ph = ",".join("?" for _ in ids)
+            rows = conn.execute(f"SELECT id,lng,lat FROM xiaoqu WHERE id IN ({ph})", ids).fetchall()
+            coord = {r["id"]: (r["lng"], r["lat"]) for r in rows
+                     if r["lng"] is not None and r["lat"] is not None}
+            cand = [{"id": i, "lng": coord[i][0], "lat": coord[i][1]} for i in ids if i in coord]
+        else:
+            cand = []
+        try:
+            cached, _key = commute.commute_for(conn, a, b, cand, mode)
+        except Exception as exc:
+            return 400, {"error": f"通勤计算失败：{exc}"}
+        items = []
+        for c in cand:
+            ta, tb = cached.get(c["id"], (None, None))
+            if ta is None or tb is None:
+                continue
+            it = meta.get(c["id"], {})
+            items.append({
+                "id": c["id"], "name": it.get("name"), "city": it.get("city"),
+                "district": it.get("district"), "plate": it.get("plate"),
+                "latest_price": it.get("latest_price"),
+                "t_a": round(ta / 60.0, 1), "t_b": round(tb / 60.0, 1),
+                "score": round((weight * ta + (1 - weight) * tb) / 60.0, 1),
+            })
+        items.sort(key=lambda x: x["score"])
+        return 200, {"originA": a, "originB": b, "mode": mode, "weight": weight,
+                     "candidates": len(cand), "items": items[:limit]}
 
     # /api/catalog  （小区目录：城市 / 区 / 关键词 / 价格 / 地铁 + 分页 + 排序）
     if path == "/api/catalog":

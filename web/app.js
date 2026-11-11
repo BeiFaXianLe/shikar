@@ -1822,6 +1822,65 @@
     });
   }
 
+  // -------------------------------------------------------------------------
+  // 双点加权通勤（OSRM 驾车，免费）
+  // -------------------------------------------------------------------------
+  function renderCommutePage() {
+    appEl.innerHTML = "";
+    appEl.appendChild(el("div", { class: "page-head" }, [
+      el("h1", { text: "双点通勤" }),
+      el("div", { class: "page-head-aside" }, [
+        el("a", { class: "catalog-entry", href: "#/catalog", text: "← 返回找小区" }),
+      ]),
+    ]));
+    var aInput = el("input", { type: "text", class: "ff-input", id: "cm-a", value: "国贸", placeholder: "地点 A" });
+    var bInput = el("input", { type: "text", class: "ff-input", id: "cm-b", value: "中关村", placeholder: "地点 B" });
+    var modeSel = el("select", { class: "ff-select", id: "cm-mode" }, [el("option", { value: "driving", text: "驾车" })]);
+    var wOut = el("output", { class: "fd-range-out", text: "均衡 50/50" });
+    var wRange = el("input", { type: "range", min: "0", max: "100", step: "5", value: "50", id: "cm-w" });
+    wRange.addEventListener("input", function () {
+      var v = Number(wRange.value);
+      wOut.textContent = v === 50 ? "均衡 50/50" : (v > 50 ? "A 优先 " + v + "%" : "B 优先 " + (100 - v) + "%");
+    });
+    var btn = el("button", { class: "btn", type: "button", text: "计算通勤" });
+    var host = el("div", { class: "poi-list" });
+    var bar = el("div", { class: "cm-bar" }, [
+      el("div", {}, [el("label", { text: "地点 A" }), aInput]),
+      el("div", {}, [el("label", { text: "地点 B" }), bInput]),
+      el("div", {}, [el("label", { text: "方式" }), modeSel]),
+      el("div", {}, [el("label", { text: "权重" }), wRange, wOut]),
+      el("div", { class: "cm-actions" }, [btn]),
+    ]);
+    appEl.appendChild(bar);
+    appEl.appendChild(host);
+    btn.addEventListener("click", function () {
+      host.innerHTML = "";
+      host.appendChild(stateNode("loading", "计算中…（批量调用免费驾车路径）"));
+      var params = { fromA: aInput.value.trim(), fromB: bInput.value.trim(), mode: modeSel.value, w: Number(wRange.value) / 100, limit: 30 };
+      getJSON("/api/commute" + buildQuery(params)).then(function (data) {
+        host.innerHTML = "";
+        var items = (data && data.items) || [];
+        if (!items.length) { host.appendChild(stateNode("empty", "没有可比较的小区（先在找小区放宽条件）")); return; }
+        host.appendChild(el("div", { class: "results-head" }, [
+          el("h2", { text: "通勤优先榜" }),
+          el("span", { class: "count", text: "候选 " + data.candidates + " 个 · " + data.originA.name + " ↔ " + data.originB.name }),
+        ]));
+        items.forEach(function (it, i) {
+          host.appendChild(el("a", { class: "poi-row", href: "#/xiaoqu/" + encodeURIComponent(it.id) }, [
+            el("div", { class: "poi-main" }, [
+              el("div", { class: "poi-name", text: (i + 1) + ". " + (it.name || it.id) }),
+              el("div", { class: "poi-meta", text: [it.district, it.plate].filter(Boolean).join(" · ") }),
+            ]),
+            el("div", { class: "poi-count", text: "A " + it.t_a + " / B " + it.t_b + " 分 · 加权 " + it.score + " 分" }),
+          ]));
+        });
+      }).catch(function (err) {
+        host.innerHTML = "";
+        host.appendChild(stateNode("error", "计算失败：" + err.message));
+      });
+    });
+  }
+
   function parseHash() {
     var raw = window.location.hash || "#/";
     var path = raw.replace(/^#/, "");
@@ -1834,6 +1893,7 @@
     if (path === "/schools") return { name: "schools" };
     if (path === "/hospitals") return { name: "hospitals" };
     if (path === "/hsr") return { name: "hsr" };
+    if (path === "/commute") return { name: "commute" };
     var m = path.match(/^\/xiaoqu\/(.+)$/);
     if (m) return { name: "detail", id: decodeURIComponent(m[1]) };
     return { name: "unknown", raw: path };
@@ -1852,6 +1912,8 @@
       renderPoiMenu("hospital");
     } else if (r.name === "hsr") {
       renderPoiMenu("hsr");
+    } else if (r.name === "commute") {
+      renderCommutePage();
     } else if (r.name === "detail") {
       renderDetail(r.id);
     } else {

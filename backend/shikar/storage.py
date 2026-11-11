@@ -145,6 +145,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_community_poi_poi
             ON community_poi (poi_id, distance_km, community_id);
+
+        CREATE TABLE IF NOT EXISTS commute_cache (
+            key          TEXT NOT NULL,
+            community_id TEXT NOT NULL,
+            t_a          REAL,
+            t_b          REAL,
+            updated_at   TEXT,
+            PRIMARY KEY (key, community_id)
+        );
         """
     )
     conn.commit()

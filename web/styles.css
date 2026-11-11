@@ -538,3 +538,14 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
   .mainnav { padding: 0 14px; overflow-x: auto; }
   .mainnav a { padding: 8px 10px; font-size: 14px; }
 }
+
+/* ---------- 双点通勤 ---------- */
+.cm-bar {
+  display: grid; grid-template-columns: 1.2fr 1.2fr 0.8fr 1.6fr; gap: 14px; align-items: end;
+  border: 1px solid var(--rule); border-top: 2px solid var(--ink); background: var(--paper-hi);
+  padding: 16px 18px; margin-bottom: 18px;
+}
+.cm-bar label { display: block; font-size: 12px; color: var(--ink-faint); margin-bottom: 4px; }
+.cm-bar .cm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+.cm-bar .fd-range-out { display: block; font-family: var(--mono); font-size: 12px; color: var(--hot); margin-top: 4px; }
+@media (max-width: 860px) { .cm-bar { grid-template-columns: 1fr 1fr; } }
