@@ -10,7 +10,7 @@ import argparse, csv, os, re, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data", "fang_2026.csv")
-PROXY = os.environ.get("FANG_PROXY", "http://127.0.0.1:7897")
+PROXY = os.environ.get("FANG_PROXY", "").strip()
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")
 CITIES = {"bj": "北京", "tj": "天津"}
@@ -19,7 +19,9 @@ FIELDS = ["city","district","plate","xiaoqu_id","xiaoqu_name","week","price","su
 
 
 def opener():
-    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+    if PROXY:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+    return urllib.request.build_opener()
 
 
 def get(op, url, ref):
