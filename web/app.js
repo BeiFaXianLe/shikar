@@ -635,6 +635,10 @@
     priceWeek: "",      // 价格期次（空=全部期次，各期标注）
     q: "",
     district: "",
+    // P2a 周边设施
+    schoolOn: false, stage: "primary", schoolMax: 2,
+    hospitalOn: false, grade: "", hospitalMax: 3,
+    hsrOn: false, hsrMax: 5,
     page: 1,
   };
 
@@ -675,6 +679,17 @@
       page_size: CATALOG_PAGE_SIZE,
       sort: (findState.lines.length || findState.station) ? "subway_distance" : "default",
     };
+    if (findState.schoolOn) {
+      params.stage = findState.stage;
+      params.school_max = findState.schoolMax;
+    }
+    if (findState.hospitalOn) {
+      if (findState.grade) params.grade = findState.grade;
+      params.hospital_max = findState.hospitalMax;
+    }
+    if (findState.hsrOn) {
+      params.hsr_max = findState.hsrMax;
+    }
     Object.keys(extra || {}).forEach(function (k) { params[k] = extra[k]; });
     return params;
   }
@@ -717,6 +732,9 @@
     findState.priceWeek = "";
     findState.q = "";
     findState.district = "";
+    findState.schoolOn = false; findState.stage = "primary"; findState.schoolMax = 2;
+    findState.hospitalOn = false; findState.grade = ""; findState.hospitalMax = 3;
+    findState.hsrOn = false; findState.hsrMax = 5;
     findState.page = 1;
     if (!queryStr) return;
 
@@ -753,6 +771,19 @@
     if (params.price_week !== undefined) findState.priceWeek = params.price_week;
     if (params.q !== undefined) findState.q = params.q;
     if (params.district !== undefined) findState.district = params.district;
+    if (params.stage !== undefined && params.stage !== "") {
+      findState.schoolOn = true; findState.stage = params.stage;
+      var sm = Number(params.school_max); if (isFinite(sm) && sm > 0) findState.schoolMax = sm;
+    }
+    if ((params.grade !== undefined && params.grade !== "") || (params.hospital_max !== undefined && params.hospital_max !== "")) {
+      findState.hospitalOn = true;
+      if (params.grade) findState.grade = params.grade;
+      var hm = Number(params.hospital_max); if (isFinite(hm) && hm > 0) findState.hospitalMax = hm;
+    }
+    if (params.hsr_max !== undefined && params.hsr_max !== "") {
+      findState.hsrOn = true;
+      var zm = Number(params.hsr_max); if (isFinite(zm) && zm > 0) findState.hsrMax = zm;
+    }
     if (params.page !== undefined) {
       var pg = parseInt(params.page, 10);
       findState.page = (isFinite(pg) && pg > 0) ? pg : 1;
@@ -1138,6 +1169,9 @@
       districts: [],
       district: findState.district,
       q: findState.q,
+      schoolOn: findState.schoolOn, stage: findState.stage, schoolMax: findState.schoolMax,
+      hospitalOn: findState.hospitalOn, grade: findState.grade, hospitalMax: findState.hospitalMax,
+      hsrOn: findState.hsrOn, hsrMax: findState.hsrMax,
       error: "",
     };
 
@@ -1264,9 +1298,48 @@
         fieldRow("小区名称", qInput),
       ]));
 
+      // 03 周边学校 / 04 医疗 / 05 高铁出行（P2a）
+      function checkboxRow(id, checked, onChange, labelText) {
+        var cb = el("input", { type: "checkbox", id: id });
+        cb.checked = checked;
+        cb.addEventListener("change", function () { onChange(cb.checked); });
+        return el("label", { class: "fd-check" }, [cb, document.createTextNode(labelText)]);
+      }
+      var stageSel = el("select", { class: "ff-select", "aria-label": "学校阶段", id: "fd-stage" });
+      [["primary", "小学"], ["middle", "初中"], ["high", "高中"]].forEach(function (p) {
+        var o = el("option", { value: p[0], text: p[1] }); if (draft.stage === p[0]) o.selected = true; stageSel.appendChild(o);
+      });
+      stageSel.addEventListener("change", function () { draft.stage = stageSel.value; });
+      var schoolMaxIn = el("input", { type: "number", min: "0.2", max: "5", step: "0.1", class: "ff-input", id: "fd-school-max", value: String(draft.schoolMax), "aria-label": "学校最大距离" });
+      schoolMaxIn.addEventListener("input", function () { var v = Number(schoolMaxIn.value); if (isFinite(v) && v > 0) draft.schoolMax = v; });
+      body.appendChild(group("03", "周边学校", [
+        checkboxRow("fd-school-on", draft.schoolOn, function (v) { draft.schoolOn = v; }, "启用学校条件"),
+        fieldRow("阶段", stageSel),
+        fieldRow("最大距离（km）", schoolMaxIn),
+      ]));
+
+      var gradeSel = el("select", { class: "ff-select", "aria-label": "医院等级", id: "fd-grade" });
+      [["", "不限"], ["三甲", "三甲"], ["二甲", "二甲"], ["未知", "未知"]].forEach(function (p) {
+        var o = el("option", { value: p[0], text: p[1] }); if (draft.grade === p[0]) o.selected = true; gradeSel.appendChild(o);
+      });
+      gradeSel.addEventListener("change", function () { draft.grade = gradeSel.value; });
+      var hospMaxIn = el("input", { type: "number", min: "0.2", max: "8", step: "0.1", class: "ff-input", id: "fd-hospital-max", value: String(draft.hospitalMax), "aria-label": "医院最大距离" });
+      hospMaxIn.addEventListener("input", function () { var v = Number(hospMaxIn.value); if (isFinite(v) && v > 0) draft.hospitalMax = v; });
+      body.appendChild(group("04", "医疗", [
+        checkboxRow("fd-hospital-on", draft.hospitalOn, function (v) { draft.hospitalOn = v; }, "启用医疗条件"),
+        fieldRow("医院等级", gradeSel),
+        fieldRow("最大距离（km）", hospMaxIn),
+      ]));
+
+      var hsrMaxIn = el("input", { type: "number", min: "0.5", max: "20", step: "0.5", class: "ff-input", id: "fd-hsr-max", value: String(draft.hsrMax), "aria-label": "高铁最大距离" });
+      hsrMaxIn.addEventListener("input", function () { var v = Number(hsrMaxIn.value); if (isFinite(v) && v > 0) draft.hsrMax = v; });
+      body.appendChild(group("05", "高铁出行", [
+        checkboxRow("fd-hsr-on", draft.hsrOn, function (v) { draft.hsrOn = v; }, "启用高铁条件"),
+        fieldRow("最大距离（km）", hsrMaxIn),
+      ]));
+
       body.appendChild(el("p", { class: "fd-note", text: "直线距离仅作位置参考；关闭抽屉不会应用修改。" }));
       inner.appendChild(body);
-
       var errEl = el("p", { class: "fd-error", id: "fd-error", role: "alert" });
       inner.appendChild(errEl);
       inner.appendChild(
@@ -1287,6 +1360,9 @@
         findState.priceMax = (draft.priceMax || "").trim();
         findState.district = draft.district;
         findState.q = (draft.q || "").trim();
+        findState.schoolOn = draft.schoolOn; findState.stage = draft.stage; findState.schoolMax = draft.schoolMax;
+        findState.hospitalOn = draft.hospitalOn; findState.grade = draft.grade; findState.hospitalMax = draft.hospitalMax;
+        findState.hsrOn = draft.hsrOn; findState.hsrMax = draft.hsrMax;
         findState.page = 1;
         loadSubwayLines(findState.city).then(function () {
           dlg.close();
