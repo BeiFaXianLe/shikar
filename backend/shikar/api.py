@@ -272,8 +272,8 @@ def _route(
         mode = _first(qs, "mode") or "driving"
         if not from_a or not from_b:
             return 400, {"error": "需要 fromA 与 fromB 两个地点"}
-        if mode != "driving":
-            return 400, {"error": "当前仅支持驾车（mode=driving）"}
+        if mode not in ("driving", "transit"):
+            return 400, {"error": "mode 仅支持 driving / transit"}
         try:
             w = _strict_float(qs, "w", "权重")
             school_max = _strict_float(qs, "school_max", "学校距离")
@@ -307,6 +307,9 @@ def _route(
             cand = [{"id": i, "lng": coord[i][0], "lat": coord[i][1]} for i in ids if i in coord]
         else:
             cand = []
+        # 公交按次计费：限制候选数，控制配额。
+        if mode == "transit":
+            cand = cand[:40]
         try:
             cached, _key = commute.commute_for(conn, a, b, cand, mode)
         except Exception as exc:

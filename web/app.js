@@ -1835,7 +1835,10 @@
     ]));
     var aInput = el("input", { type: "text", class: "ff-input", id: "cm-a", value: "国贸", placeholder: "地点 A" });
     var bInput = el("input", { type: "text", class: "ff-input", id: "cm-b", value: "中关村", placeholder: "地点 B" });
-    var modeSel = el("select", { class: "ff-select", id: "cm-mode" }, [el("option", { value: "driving", text: "驾车" })]);
+    var modeSel = el("select", { class: "ff-select", id: "cm-mode" }, [
+      el("option", { value: "driving", text: "驾车" }),
+      el("option", { value: "transit", text: "公交 / 地铁" }),
+    ]);
     var wOut = el("output", { class: "fd-range-out", text: "均衡 50/50" });
     var wRange = el("input", { type: "range", min: "0", max: "100", step: "5", value: "50", id: "cm-w" });
     wRange.addEventListener("input", function () {
@@ -1852,6 +1855,7 @@
       el("div", { class: "cm-actions" }, [btn]),
     ]);
     appEl.appendChild(bar);
+    appEl.appendChild(el("p", { class: "readout-note", text: "驾车＝OSRM 免费“自由流”估算（不含实时路况，仅供参考）；公交／地铁＝百度路径（有配额、候选≤40、结果缓存）。" }));
     appEl.appendChild(host);
     btn.addEventListener("click", function () {
       host.innerHTML = "";

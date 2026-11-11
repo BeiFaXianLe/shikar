@@ -42,25 +42,43 @@ def _table(a: tuple[float, float], b: tuple[float, float], dests: list[tuple[flo
 
 
 def commute_for(conn: sqlite3.Connection, a: dict, b: dict, candidates: list[dict], mode: str = "driving"):
-    """返回 {community_id: (t_a, t_b)}，带 SQLite 缓存。mode 目前仅 driving。"""
-    if mode != "driving":
-        raise ValueError("当前仅支持驾车（driving）；公交需商业路径 API")
-    key = f"{a['lat']:.5f},{a['lng']:.5f}|{b['lat']:.5f},{b['lng']:.5f}|driving"
+    """返回 {community_id: (t_a, t_b)}，带 SQLite 缓存。mode: driving(OSRM免费) / transit(百度)。"""
+    if mode not in ("driving", "transit"):
+        raise ValueError("mode 仅支持 driving / transit")
+    key = f"{a['lat']:.5f},{a['lng']:.5f}|{b['lat']:.5f},{b['lng']:.5f}|{mode}"
     cached: dict[str, tuple] = {}
     for row in conn.execute("SELECT community_id,t_a,t_b FROM commute_cache WHERE key=?", (key,)).fetchall():
         cached[row["community_id"]] = (row["t_a"], row["t_b"])
     missing = [c for c in candidates if c["id"] not in cached]
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-    for i in range(0, len(missing), BATCH):
-        chunk = missing[i:i + BATCH]
-        ta, tb = _table((a["lat"], a["lng"]), (b["lat"], b["lng"]),
-                        [(c["lat"], c["lng"]) for c in chunk])
-        for c, x, y in zip(chunk, ta, tb):
-            conn.execute(
-                "INSERT INTO commute_cache(key,community_id,t_a,t_b,updated_at) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(key,community_id) DO UPDATE SET t_a=excluded.t_a,t_b=excluded.t_b,updated_at=excluded.updated_at",
-                (key, c["id"], x, y, now),
-            )
-            cached[c["id"]] = (x, y)
+
+    def save(cid, x, y):
+        conn.execute(
+            "INSERT INTO commute_cache(key,community_id,t_a,t_b,updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(key,community_id) DO UPDATE SET t_a=excluded.t_a,t_b=excluded.t_b,updated_at=excluded.updated_at",
+            (key, cid, x, y, now),
+        )
+        cached[cid] = (x, y)
+
+    if mode == "driving":
+        for i in range(0, len(missing), BATCH):
+            chunk = missing[i:i + BATCH]
+            ta, tb = _table((a["lat"], a["lng"]), (b["lat"], b["lng"]),
+                            [(c["lat"], c["lng"]) for c in chunk])
+            for c, x, y in zip(chunk, ta, tb):
+                save(c["id"], x, y)
+    else:  # transit：百度公交（按次计费），逐个 OD 计算
+        def bd(p):
+            lng, lat = baidu.wgs84_to_bd09(p["lng"], p["lat"])
+            return (lat, lng)
+        pa, pb = bd(a), bd(b)
+        for c in missing:
+            pc = bd(c)
+            try:
+                ta = baidu.transit(pa, pc)["duration_s"]
+                tb = baidu.transit(pb, pc)["duration_s"]
+            except Exception:
+                continue
+            save(c["id"], ta, tb)
     conn.commit()
     return cached, key
