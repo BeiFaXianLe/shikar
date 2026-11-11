@@ -985,6 +985,14 @@
         meta.push("▪ " + sub.line_name + " · " + where + "　" + fmtNum(sub.distance_km, 2) + " km");
       }
       if (it.data_points != null) meta.push(it.data_points + " 期行情");
+      // P2a：次行显示最近学校 / 医院 / 高铁站（若有）。
+      [["school", "学校"], ["hospital", "医院"], ["hsr", "高铁"]].forEach(function (pair) {
+        var f = it.features && it.features[pair[0]];
+        if (f && f.name) {
+          var d = (f.distance_km != null) ? f.distance_km.toFixed(2) + "km" : "?";
+          meta.push("▪ " + pair[1] + " " + f.name + " " + d);
+        }
+      });
       var priceText = fmtPrice(it.latest_price);
       var momText = "";
       if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
@@ -1630,6 +1638,114 @@
   // -------------------------------------------------------------------------
   // 路由
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // 学校 / 医院 / 高铁站 菜单 + 周边小区 Top20
+  // -------------------------------------------------------------------------
+  var POI_CFG = {
+    school: { title: "学校", api: "/api/schools",
+      stages: [["primary", "小学"], ["middle", "初中"], ["high", "高中"]] },
+    hospital: { title: "医院", api: "/api/hospitals",
+      grades: [["", "全部"], ["三甲", "三甲"], ["二甲", "二甲"], ["未知", "未知"]] },
+    hsr: { title: "高铁站", api: "/api/hsr" },
+  };
+  var poiUI = { school: { stage: "primary", city: "" }, hospital: { grade: "", city: "" }, hsr: { city: "" } };
+
+  function poiMenuHash(type) {
+    return type === "school" ? "#/schools" : (type === "hospital" ? "#/hospitals" : "#/hsr");
+  }
+
+  function renderPoiMenu(type) {
+    var cfg = POI_CFG[type];
+    var ui = poiUI[type];
+    appEl.innerHTML = "";
+    appEl.appendChild(el("div", { class: "page-head" }, [
+      el("h1", { text: cfg.title }),
+      el("div", { class: "page-head-aside" }, [
+        el("a", { class: "catalog-entry", href: "#/catalog", text: "← 返回找小区" }),
+      ]),
+    ]));
+
+    var bar = el("div", { class: "poi-bar" });
+    (cfg.stages || []).forEach(function (p) {
+      var b = el("button", { class: "poi-tab" + (ui.stage === p[0] ? " on" : ""), type: "button", text: p[1] });
+      b.addEventListener("click", function () { ui.stage = p[0]; renderPoiMenu(type); });
+      bar.appendChild(b);
+    });
+    (cfg.grades || []).forEach(function (p) {
+      var b = el("button", { class: "poi-tab" + (ui.grade === p[0] ? " on" : ""), type: "button", text: p[1] });
+      b.addEventListener("click", function () { ui.grade = p[0]; renderPoiMenu(type); });
+      bar.appendChild(b);
+    });
+    var citySel = el("select", { class: "district-select", "aria-label": "城市" }, [
+      el("option", { value: "", text: "京津全部" }),
+      el("option", { value: "北京", text: "北京" }),
+      el("option", { value: "天津", text: "天津" }),
+    ]);
+    citySel.value = ui.city || "";
+    citySel.addEventListener("change", function () { ui.city = citySel.value; renderPoiMenu(type); });
+    bar.appendChild(citySel);
+    appEl.appendChild(bar);
+
+    var host = el("div", { class: "poi-list" });
+    appEl.appendChild(host);
+    host.appendChild(stateNode("loading", "正在加载…"));
+
+    var params = {};
+    if (ui.city) params.city = ui.city;
+    if (cfg.stages && ui.stage) params.stage = ui.stage;
+    if (cfg.grades && ui.grade) params.grade = ui.grade;
+
+    getJSON(cfg.api + buildQuery(params)).then(function (data) {
+      host.innerHTML = "";
+      var items = (data && data.items) || [];
+      if (!items.length) { host.appendChild(stateNode("empty", "暂无数据（该城市 / 类别尚未收录）")); return; }
+      items.forEach(function (it) {
+        var row = el("a", { class: "poi-row", href: "javascript:void(0)" }, [
+          el("div", { class: "poi-main" }, [
+            el("div", { class: "poi-name", text: it.name || it.id }),
+            el("div", { class: "poi-meta", text: [it.city, it.district, it.grade].filter(Boolean).join(" · ") }),
+          ]),
+          el("div", { class: "poi-count", text: (it.community_count || 0) + " 个周边小区" }),
+        ]);
+        row.addEventListener("click", function () { renderPoiCommunities(type, it.id, it.name); });
+        host.appendChild(row);
+      });
+    }).catch(function (err) {
+      host.innerHTML = "";
+      host.appendChild(stateNode("error", "加载失败：" + err.message));
+    });
+  }
+
+  function renderPoiCommunities(type, id, name) {
+    appEl.innerHTML = "";
+    appEl.appendChild(backLink(poiMenuHash(type), "← 返回" + POI_CFG[type].title));
+    appEl.appendChild(el("div", { class: "page-head" }, [
+      el("h1", { text: name || id }),
+      el("span", { class: "sub", text: "周边小区 Top 20（按直线距离）" }),
+    ]));
+    var host = el("div", { class: "poi-list" });
+    appEl.appendChild(host);
+    host.appendChild(stateNode("loading", "加载中…"));
+    getJSON("/api/poi/" + encodeURIComponent(id) + "/communities?limit=20").then(function (data) {
+      host.innerHTML = "";
+      var items = (data && data.items) || [];
+      if (!items.length) { host.appendChild(stateNode("empty", "周边暂无已收录小区")); return; }
+      items.forEach(function (it, i) {
+        var price = (it.latest_price === null || it.latest_price === undefined) ? "" : (" · ¥" + fmtNum(it.latest_price, 0));
+        host.appendChild(el("a", { class: "poi-row", href: "#/xiaoqu/" + encodeURIComponent(it.id) }, [
+          el("div", { class: "poi-main" }, [
+            el("div", { class: "poi-name", text: (i + 1) + ". " + (it.name || it.id) }),
+            el("div", { class: "poi-meta", text: [it.district, it.plate].filter(Boolean).join(" · ") }),
+          ]),
+          el("div", { class: "poi-count", text: (it.distance_km != null ? it.distance_km.toFixed(2) + " km" : "—") + price }),
+        ]));
+      });
+    }).catch(function (err) {
+      host.innerHTML = "";
+      host.appendChild(stateNode("error", "加载失败：" + err.message));
+    });
+  }
+
   function parseHash() {
     var raw = window.location.hash || "#/";
     var path = raw.replace(/^#/, "");
@@ -1639,6 +1755,9 @@
     var queryStr = "";
     if (qIdx >= 0) { queryStr = path.slice(qIdx + 1); path = path.slice(0, qIdx); }
     if (path === "/catalog") return { name: "catalog", query: queryStr };
+    if (path === "/schools") return { name: "schools" };
+    if (path === "/hospitals") return { name: "hospitals" };
+    if (path === "/hsr") return { name: "hsr" };
     var m = path.match(/^\/xiaoqu\/(.+)$/);
     if (m) return { name: "detail", id: decodeURIComponent(m[1]) };
     return { name: "unknown", raw: path };
@@ -1651,6 +1770,12 @@
     } else if (r.name === "catalog") {
       applyFindQuery(r.query);
       renderCatalog();
+    } else if (r.name === "schools") {
+      renderPoiMenu("school");
+    } else if (r.name === "hospitals") {
+      renderPoiMenu("hospital");
+    } else if (r.name === "hsr") {
+      renderPoiMenu("hsr");
     } else if (r.name === "detail") {
       renderDetail(r.id);
     } else {

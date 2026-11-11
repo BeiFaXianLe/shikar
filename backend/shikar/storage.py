@@ -369,17 +369,19 @@ def upsert_community_poi(conn: sqlite3.Connection, community_id: str, poi_id: st
 def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
               grade: str | None = None, district: str | None = None,
               city: str | None = None) -> list[dict]:
-    sql = "SELECT * FROM poi WHERE type = ?"
+    sql = ("SELECT p.*, "
+           "(SELECT COUNT(*) FROM community_poi cp WHERE cp.poi_id = p.id) AS community_count "
+           "FROM poi p WHERE p.type = ?")
     params: list = [type_]
     if subtype:
-        sql += " AND subtype = ?"; params.append(subtype)
+        sql += " AND p.subtype = ?"; params.append(subtype)
     if grade:
-        sql += " AND grade = ?"; params.append(grade)
+        sql += " AND p.grade = ?"; params.append(grade)
     if city:
-        sql += " AND city = ?"; params.append(city)
+        sql += " AND p.city = ?"; params.append(city)
     if district:
-        sql += " AND district LIKE ?"; params.append(district + "%")
-    sql += " ORDER BY name ASC"
+        sql += " AND p.district LIKE ?"; params.append(district + "%")
+    sql += " ORDER BY p.name ASC"
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 

@@ -73,8 +73,7 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
   flex: 1 0 auto; width: 100%; max-width: 1180px;
   margin: 0 auto; padding: 30px 24px 48px;
 }
-.footer {
-  flex-shrink: 0; text-align: center; padding: 20px 24px 28px;
+.footer {  flex-shrink: 0; text-align: center; padding: 20px 24px 28px;
   color: var(--ink-faint); font-size: 12.5px; letter-spacing: 0.04em;
   border-top: 1px solid var(--rule); margin-top: 8px;
 }
@@ -512,4 +511,30 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
   .find-chips .fc-label { flex-shrink: 0; }
   .fc-chip, .fc-clear { flex-shrink: 0; }
   .fd-checks { grid-template-columns: 1fr; }
+}
+
+/* ---------- 主导航 ---------- */
+.mainnav {
+  display: flex; gap: 2px; max-width: 1180px; margin: 0 auto; padding: 0 24px;
+  border-top: 1px solid var(--rule-soft);
+}
+.mainnav a {
+  font-family: var(--serif); font-size: 15px; letter-spacing: 0.06em; color: var(--ink-soft);
+  padding: 9px 14px; border-bottom: 2px solid transparent; border-top: none;
+}
+.mainnav a:hover { color: var(--ink); border-bottom-color: var(--hot); }
+
+/* ---------- 学校/医院/高铁站 菜单 ---------- */
+.poi-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 14px; border-bottom: 1px solid var(--ink); padding-bottom: 10px; }
+.poi-tab { font-family: var(--serif); border: 1px solid var(--rule); background: transparent; color: var(--ink-soft); padding: 5px 12px; cursor: pointer; font-size: 14px; letter-spacing: 0.04em; }
+.poi-tab.on { background: var(--ink); color: var(--paper-hi); border-color: var(--ink); }
+.poi-list { display: flex; flex-direction: column; }
+.poi-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 11px 4px; border-bottom: 1px dotted var(--rule); color: var(--ink); border-top: none; }
+.poi-row:hover { background: rgba(23,35,42,.04); }
+.poi-name { font-family: var(--serif); font-size: 16px; font-weight: 700; }
+.poi-meta { font-size: 12px; color: var(--ink-faint); margin-top: 2px; }
+.poi-count { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; }
+@media (max-width: 860px) {
+  .mainnav { padding: 0 14px; overflow-x: auto; }
+  .mainnav a { padding: 8px 10px; font-size: 14px; }
 }
