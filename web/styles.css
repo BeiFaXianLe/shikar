@@ -549,3 +549,181 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
 .cm-bar .cm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
 .cm-bar .fd-range-out { display: block; font-family: var(--mono); font-size: 12px; color: var(--hot); margin-top: 4px; }
 @media (max-width: 860px) { .cm-bar { grid-template-columns: 1fr 1fr; } }
+
+/* ==========================================================================
+   移动端 UI 优化（≤720px / ≤400px）
+   目标：触控可用、无横向溢出、信息不截断、图表可读、尊重安全区与减少动效。
+   仅覆盖小屏，桌面样式不变。
+   ========================================================================== */
+
+/* --- 通用按钮（此前 .btn 无样式，通勤“计算”按钮是浏览器默认小按钮） --- */
+.btn {
+  font-family: var(--serif); font-size: 14px; color: var(--ink);
+  background: transparent; border: 1px solid var(--ink); border-radius: 0;
+  padding: 7px 16px; cursor: pointer; letter-spacing: 0.04em;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.btn:hover { background: var(--ink); color: var(--paper-hi); }
+.btn:active { opacity: 0.72; }
+
+/* 榜单小标题（此前无样式） */
+.results-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 16px 0 8px; border-bottom: 1px solid var(--ink); margin-top: 8px;
+}
+.results-head h2 { font-family: var(--serif); font-size: 18px; margin: 0; letter-spacing: 0.06em; }
+.results-head .count { font-size: 12.5px; color: var(--ink-soft); font-family: var(--mono); }
+
+/* 价源标注（此前缺样式，长文本会把结果行挤爆） */
+.fr-period {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+  letter-spacing: 0.02em; line-height: 1.45; white-space: nowrap;
+}
+.fr-period-hist { color: var(--ink-faint); }
+
+/* 期次下拉（此前用浏览器默认样式，撑大标题栏） */
+.find-period-select {
+  font-family: var(--serif); font-size: 14px; color: var(--ink);
+  background: transparent; border: 1px solid var(--ink); border-radius: 0;
+  padding: 5px 8px; max-width: 100%; margin-left: auto;
+}
+
+/* 长名称允许换行，避免挤压 */
+.poi-main { min-width: 0; }
+.poi-name { overflow-wrap: anywhere; }
+
+/* --- 基础：安全区、防 iOS 字号放大、触控反馈、减少动效 --- */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.topbar { padding-top: env(safe-area-inset-top, 0px); }
+.footer { padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px)); }
+
+a, button, select, .fc-chip, .poi-tab, .ff-choice { -webkit-tap-highlight-color: rgba(23,35,42,0.08); }
+button:active, .fc-chip:active, .poi-tab:active,
+.catalog-btn:active, .find-pg-btn:active, .ff-more:active { opacity: 0.72; }
+
+a:focus-visible, button:focus-visible, select:focus-visible,
+input:focus-visible, .ff-choice:focus-visible {
+  outline: 2px solid var(--cold); outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .spinner { animation: none; border-top-color: var(--ink); }
+}
+
+/* --- 平板 / 大屏手机 --- */
+@media (max-width: 720px) {
+  .app { padding: 20px 14px 40px; }
+  .topbar-inner { padding: 12px 14px; }
+  .brand { font-size: 17px; letter-spacing: 0.04em; }
+
+  /* 顶部导航：可横向滑动 + 44px 触控高度 */
+  .mainnav { padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .mainnav::-webkit-scrollbar { display: none; }
+  .mainnav a { flex: 0 0 auto; display: flex; align-items: center; min-height: 44px; padding: 0 12px; font-size: 14px; }
+
+  .page-head h1 { font-size: 23px; }
+  .find-title { font-size: 22px; }
+  .detail-title { font-size: 24px; }
+  .section h2 { font-size: 16px; }
+
+  /* 统一字号阶梯：11.5 / 12.5 / 14 / 16 / 18 / 22
+     控件与按钮同为 16px 衬线；辅助信息 12.5px，避免同一屏跨度太碎。 */
+  .find-sub { font-size: 14px; }
+  .find-mobile-btn { font-size: 16px; }
+  .find-results-bar h2 { font-size: 17px; }
+  .find-count { font-size: 12.5px; }
+  .fr-name { font-size: 16px; }
+  .fr-loc { font-size: 12.5px; }
+  .fr-meta { font-size: 12.5px; }
+  .fr-ordinal { font-size: 12px; }
+  .fr-period { font-size: 11.5px; }
+  .catalog-entry, .back { font-size: 13.5px; }
+  .city-filter select { font-size: 15px; }
+  .cm-bar .btn { font-size: 16px; }
+  .catalog-btn, .find-pg-btn, .ff-more, .poi-tab, .fc-chip { font-size: 15px; }
+
+  /* 表单控件 16px：避免 iOS 聚焦时整页自动缩放；并给足 44px 触控高度 */
+  .catalog-input, .ff-input, .ff-select, .ff-price, .ff-choice,
+  .cm-bar input, .cm-bar select, .find-period-select, .district-select {
+    font-size: 16px; min-height: 44px; padding-top: 9px; padding-bottom: 9px;
+  }
+  .ff-choice, .catalog-btn, .find-pg-btn, .find-mobile-btn, .ff-more,
+  .poi-tab, .fc-chip, .fc-clear { min-height: 40px; }
+  .find-mobile-btn { min-height: 46px; }
+  .fd-close { min-width: 44px; min-height: 44px; }
+
+  /* 小区结果行：卡片式网格，名称不再被价源挤成省略号 */
+  .find-row {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(0, 34%);
+    column-gap: 10px; row-gap: 6px; align-items: start; padding: 14px 2px;
+  }
+  .fr-ordinal { grid-column: 1; grid-row: 1; padding-top: 3px; }
+  .fr-main { display: contents; }
+  .fr-name {
+    grid-column: 2; grid-row: 1;
+    white-space: normal; overflow: visible; text-overflow: clip;
+    font-size: 16px; line-height: 1.35;
+  }
+  .fr-loc { display: block; margin: 2px 0 0; font-size: 12.5px; white-space: normal; }
+  .fr-meta { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
+  .fr-price { display: contents; }
+  .fr-price-v { grid-column: 3; grid-row: 1; justify-self: end; text-align: right; font-size: 18px; }
+  .fr-period { grid-column: 1 / -1; grid-row: 3; white-space: normal; text-align: left; font-size: 11.5px; padding-top: 2px; }
+  .fr-mom { grid-column: 1 / -1; grid-row: 4; justify-self: end; font-size: 11px; }
+
+  /* 小区目录筛选栏：与「找小区」一致地堆叠 */
+  .catalog-filter { gap: 10px; }
+  .cf-field, .cf-grow, .cf-actions { flex: 1 1 100%; min-width: 0; }
+  .catalog-btn { width: 100%; }
+
+  /* 双点通勤：单列堆叠，计算按钮不再被右边缘裁掉 */
+  .cm-bar { grid-template-columns: 1fr; gap: 12px; padding: 14px; }
+  .cm-bar .cm-actions { grid-column: auto; justify-content: stretch; }
+  .cm-bar .cm-actions .btn, .cm-bar .btn { width: 100%; min-height: 46px; }
+
+  /* 详情页 */
+  .detail-head { padding: 18px 16px; }
+  .detail-metrics { gap: 16px 24px; padding-top: 12px; }
+  .metric .v { font-size: 24px; }
+  .readout { gap: 0 20px; }
+  .readout-item .rv { font-size: 23px; }
+  .signal { gap: 10px; }
+  .signal .date { min-width: 74px; font-size: 11.5px; }
+  .compare-row { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .compare-arrow { transform: rotate(90deg); align-self: flex-start; }
+
+  /* 图表：小屏横向滑动保留字号（760px viewBox 压到 360 会看不清） */
+  .chart { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; }
+  .chart svg { min-width: 560px; }
+
+  /* POI 榜单行 */
+  .poi-row { align-items: flex-start; gap: 10px; padding: 12px 2px; }
+  .poi-name { font-size: 15.5px; line-height: 1.4; }
+  .poi-count { max-width: 46%; text-align: right; white-space: normal; }
+
+  /* 抽屉底部按钮全宽，拇指易点 */
+  .fd-foot { gap: 10px; }
+  .fd-foot > * { flex: 1 1 0; min-height: 46px; }
+
+  .find-pager, .catalog-pager { gap: 10px; }
+}
+
+@media (max-width: 400px) {
+  .brand { font-size: 16px; }
+  .page-head h1 { font-size: 21px; }
+  .fr-price-v { font-size: 17px; }
+  .fr-meta { gap: 3px 10px; font-size: 12.5px; }
+  .gauge { width: 118px; height: 74px; }
+  .gauge-temp .num { font-size: 38px; }
+  .readout { grid-template-columns: 1fr; }
+}
