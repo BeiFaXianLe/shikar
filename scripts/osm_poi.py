@@ -122,9 +122,11 @@ def main():
     conn.execute("PRAGMA foreign_keys=ON")
     storage.init_db(conn)
 
-    # 迁移百度已标注的「三甲/二甲/重点」到同名 OSM POI（按包含关系近似匹配）
+    # 迁移百度已标注的「三甲/二甲/重点」到同名 OSM POI（按包含关系近似匹配）。
+    # 只取**当前城市**的百度标注，避免跨城误配（P1-1）。
     grade_rows = conn.execute(
-        "SELECT name,grade FROM poi WHERE source='baidu' AND grade IN ('三甲','二甲','重点')"
+        "SELECT name,grade FROM poi WHERE source='baidu' AND city=? AND grade IN ('三甲','二甲','重点')",
+        (a.city,),
     ).fetchall()
     grade_map = [(r["name"].strip(), r["grade"]) for r in grade_rows]
 
@@ -135,19 +137,56 @@ def main():
                 return g
         return None
 
-    # 清掉该城此前 OSM 导入，避免重复
-    conn.execute("DELETE FROM community_poi WHERE poi_id LIKE 'osm:%' AND poi_id IN (SELECT id FROM poi WHERE city=?)", (a.city,))
-    conn.execute("DELETE FROM poi WHERE city=? AND id LIKE 'osm:%'", (a.city,))
-    for p in pois:
-        g = match_grade(p["name"])
-        if g:
-            p = {**p, "grade": g}
-        storage.upsert_poi(conn, {**p, "city": a.city, "address": None, "source": "osm", "version": "2026-11"})
-    conn.commit()
-    # 删除百度旧 POI（避免与 OSM 重复）
-    conn.execute("DELETE FROM community_poi WHERE poi_id IN (SELECT id FROM poi WHERE source='baidu')")
-    conn.execute("DELETE FROM poi WHERE source='baidu'")
-    conn.commit()
+    # 同事务替换（P1-1）：只替换**当前城市**已确认对应设施。
+    # 旧实现无条件 DELETE 全库 source='baidu'，导入北京会误删天津及未被 OSM 覆盖的
+    # 百度设施。改为：
+    #   1) 只清当前城市此前 OSM 导入（按 'osm:%' + city 精确限定）；
+    #   2) 对当前城市的百度 POI，**仅当已有一条同城同类型 OSM POI 与其同名/近名匹配**
+    #      （即确认对应）时才删除该百度 POI 及其社区关系；
+    #   3) 全过程在同一事务内完成并一次提交，任何一步失败整体回滚，不会留下半删状态。
+    osm_ids = {p["id"] for p in pois}
+    try:
+        # 1) 清当前城市旧 OSM 数据（重复导入去重）。
+        conn.execute(
+            "DELETE FROM community_poi WHERE poi_id LIKE 'osm:%' AND poi_id IN "
+            "(SELECT id FROM poi WHERE city=?)",
+            (a.city,),
+        )
+        conn.execute("DELETE FROM poi WHERE city=? AND id LIKE 'osm:%'", (a.city,))
+        for p in pois:
+            g = match_grade(p["name"])
+            if g:
+                p = {**p, "grade": g}
+            storage.upsert_poi(conn, {**p, "city": a.city, "address": None, "source": "osm", "version": "2026-11"})
+
+        # 2) 仅删除当前城市中「已确认被 OSM 对应」的百度 POI。
+        osm_names = [(p["type"], p["name"].strip()) for p in pois if p.get("name")]
+
+        def confirmed_baidu_match(brow) -> bool:
+            bn = (brow["name"] or "").strip()
+            if len(bn) < 3:
+                return False
+            for otype, onm in osm_names:
+                if otype != brow["type"]:
+                    continue
+                if bn == onm or bn in onm or onm in bn:
+                    return True
+            return False
+
+        baidu_rows = conn.execute(
+            "SELECT id,type,name FROM poi WHERE source='baidu' AND city=?", (a.city,)
+        ).fetchall()
+        to_delete = [r["id"] for r in baidu_rows if confirmed_baidu_match(r)]
+        if to_delete:
+            ph = ",".join("?" for _ in to_delete)
+            conn.execute(
+                f"DELETE FROM community_poi WHERE poi_id IN ({ph})", to_delete
+            )
+            conn.execute(f"DELETE FROM poi WHERE id IN ({ph})", to_delete)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
     comms = conn.execute("SELECT id,lng,lat FROM xiaoqu WHERE city=? AND lng IS NOT NULL AND lat IS NOT NULL", (a.city,)).fetchall()
     total_pairs = 0

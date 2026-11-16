@@ -36,7 +36,7 @@ from typing import Optional
 
 from . import subway
 
-__all__ = ["query_catalog"]
+__all__ = ["query_catalog", "select_commute_candidates"]
 
 #: ``page_size`` 默认值。
 _DEFAULT_PAGE_SIZE = 50
@@ -335,4 +335,91 @@ def query_catalog(
         "price_periods": price_periods,
         "price_week": price_week if has_price_week else None,
         "items": items,
+    }
+
+
+def _haversine_km(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
+    """两点球面距离（km），用于候选的空间排序。"""
+    r = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def select_commute_candidates(
+    conn: sqlite3.Connection,
+    a: dict,
+    b: dict,
+    *,
+    city: Optional[str] = None,
+    district: Optional[str] = None,
+    stage: Optional[str] = None,
+    school_max: Optional[float] = None,
+    grade: Optional[str] = None,
+    hospital_max: Optional[float] = None,
+    hsr_max: Optional[float] = None,
+    max_candidates: Optional[int] = None,
+) -> dict:
+    """为通勤计算挑选候选小区：**先过滤有效坐标，再按空间规则取有限候选**。
+
+    修复 P1-3：旧实现先按名称截前 N 条、再排除无坐标小区，会把「名称靠前但
+    无坐标」的排除后仍留下不足甚至为零的有效候选；本函数改为：
+
+    1. 以相同的过滤/排序语义取出全部命中小区（不截断）；
+    2. **仅保留 lng/lat 均有效**的小区；
+    3. 以 A、B 两点中点为参照，按球面距离升序排列（越靠 A/B 越优先，空间规则）；
+    4. 取前 ``max_candidates`` 条（``None`` 表示不限）。
+
+    :return: ``{"items": [...], "total_matched", "with_coords", "truncated"}``，
+        其中 ``items`` 每项含 ``id/name/city/district/plate/latest_price/lng/lat``；
+        ``truncated`` 表示是否因 ``max_candidates`` 截断。
+    """
+    res = query_catalog(
+        conn, city=city, district=district, page=1, page_size=_MAX_PAGE_SIZE,
+        stage=stage, school_max=school_max, grade=grade,
+        hospital_max=hospital_max, hsr_max=hsr_max,
+    )
+    items = res["items"]
+    total_matched = res["total"]
+
+    # 取坐标（只查命中集合，避免全表扫描）。
+    ids = [it["id"] for it in items]
+    coord: dict[str, tuple[float, float]] = {}
+    if ids:
+        ph = ",".join("?" for _ in ids)
+        for r in conn.execute(
+            f"SELECT id,lng,lat FROM xiaoqu WHERE id IN ({ph})", ids
+        ).fetchall():
+            if r["lng"] is not None and r["lat"] is not None:
+                coord[r["id"]] = (r["lng"], r["lat"])
+
+    mid_lng = (a["lng"] + b["lng"]) / 2.0
+    mid_lat = (a["lat"] + b["lat"]) / 2.0
+    valid: list[dict] = []
+    for it in items:
+        c = coord.get(it["id"])
+        if c is None:
+            continue
+        lng, lat = c
+        valid.append({
+            "id": it["id"], "name": it.get("name"), "city": it.get("city"),
+            "district": it.get("district"), "plate": it.get("plate"),
+            "latest_price": it.get("latest_price"), "lng": lng, "lat": lat,
+            "_dist": _haversine_km(mid_lng, mid_lat, lng, lat),
+        })
+    valid.sort(key=lambda x: (x["_dist"], x["id"]))
+    with_coords = len(valid)
+    truncated = False
+    if max_candidates is not None and with_coords > max_candidates:
+        valid = valid[:max_candidates]
+        truncated = True
+    for v in valid:
+        v.pop("_dist", None)
+    return {
+        "items": valid,
+        "total_matched": total_matched,
+        "with_coords": with_coords,
+        "truncated": truncated,
     }

@@ -202,6 +202,135 @@ _UNSUPPORTED_CATALOG_PARAMS = (
 # --------------------------------------------------------------------------- #
 # 路由处理
 # --------------------------------------------------------------------------- #
+#: 公交（百度按次计费）单次最多计算的候选数量（配额约束，P1-6）。
+_COMMUTE_MAX_TRANSIT = 40
+#: 驾车单次最多计算的候选数量（对 OSRM 免费但需控量）。
+_COMMUTE_MAX_DRIVING = 200
+
+#: 通勤错误 ``kind`` → HTTP 状态码映射（P1-5：区分错误类型）。
+_COMMUTE_ERROR_STATUS = {
+    "params": 400,
+    "upstream": 502,
+    "timeout": 504,
+    "budget": 429,
+}
+
+
+def _handle_commute(conn: sqlite3.Connection, qs: dict[str, list[str]]) -> tuple[int, object]:
+    """处理 ``/api/commute``：地点解析 + 候选选取 + 通勤计算，返回结构化错误。
+
+    要点（对应审核 P1-3/4/5/6）：
+
+    * 候选选取先过滤有效坐标再按空间规则取有限候选，并在响应中报告
+      ``candidates`` / ``with_coords`` / ``truncated``；
+    * 地点解析与通勤计算都在**数据库锁之外**进行（此函数不持锁调用外部网络，
+      见 ``make_handler`` 的锁边界）；数据库读写由内部短事务完成；
+    * 明确区分参数错误(400)、上游失败(502)、超时(504)、预算耗尽(429)；预算
+      耗尽时返回已计算部分的结果与 ``partial`` 统计，而非「成功空」。
+    """
+    from_a = _first(qs, "fromA")
+    from_b = _first(qs, "fromB")
+    mode = _first(qs, "mode") or "driving"
+    has_coord_a = _first(qs, "latA") is not None and _first(qs, "lngA") is not None
+    has_coord_b = _first(qs, "latB") is not None and _first(qs, "lngB") is not None
+    if (not from_a and not has_coord_a) or (not from_b and not has_coord_b):
+        return 400, {"error": "需要 fromA 与 fromB 两个地点"}
+    if mode not in ("driving", "transit"):
+        return 400, {"error": "mode 仅支持 driving / transit"}
+    try:
+        w = _strict_float(qs, "w", "权重")
+        school_max = _strict_float(qs, "school_max", "学校距离")
+        hospital_max = _strict_float(qs, "hospital_max", "医院距离")
+        hsr_max = _strict_float(qs, "hsr_max", "高铁距离")
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    weight = 0.5 if w is None else max(0.0, min(1.0, w))
+    limit = _first_int(qs, "limit") or 20
+    limit = max(1, min(200, limit))
+    city = _first(qs, "city")
+
+    def _place(side: str) -> Optional[dict]:
+        """优先用前端从下拉选中的坐标（BD09），否则回退到百度 suggestion 解析。"""
+        text = _first(qs, "from" + side)
+        lat = _first(qs, "lat" + side)
+        lng = _first(qs, "lng" + side)
+        if lat is not None and lng is not None:
+            try:
+                blat, blng = float(lat), float(lng)
+            except (TypeError, ValueError):
+                return None
+            wlng, wlat = baidu.bd09_to_wgs84(blng, blat)
+            return {"name": text or "选中地点", "lat": wlat, "lng": wlng}
+        if not text:
+            return None
+        side_city = _first(qs, "city" + side) or city
+        return commute.resolve_place(conn, text, side_city)
+
+    # 地点解析（外部网络，不持 DB 锁）。
+    try:
+        a = _place("A")
+        b = _place("B")
+    except commute.CommuteError as exc:
+        status = _COMMUTE_ERROR_STATUS.get(exc.kind, 502)
+        return status, {"error": str(exc), "error_type": exc.kind}
+    if not a or not b:
+        return 400, {"error": "无法解析地点，请从下拉中选择或换个更具体的名称", "error_type": "params"}
+
+    try:
+        picked = catalog.select_commute_candidates(
+            conn, a, b, city=city, district=_first(qs, "district"),
+            stage=_first(qs, "stage"), school_max=school_max,
+            grade=_first(qs, "grade"), hospital_max=hospital_max, hsr_max=hsr_max,
+            max_candidates=_COMMUTE_MAX_TRANSIT if mode == "transit" else _COMMUTE_MAX_DRIVING,
+        )
+    except ValueError as exc:
+        return 400, {"error": str(exc), "error_type": "params"}
+
+    cand = picked["items"]
+    meta = {it["id"]: it for it in cand}
+    # 通勤计算（外部网络，不持 DB 锁；内部短事务写缓存）。
+    try:
+        cached, _key, stats = commute.commute_for(conn, a, b, cand, mode)
+        err = None
+    except commute.CommuteError as exc:
+        cached = getattr(exc, "_cached", {}) or {}
+        stats = exc.partial or {"total": len(cand), "computed": 0, "truncated": True}
+        err = exc
+
+    items = []
+    for c in cand:
+        ta, tb = cached.get(c["id"], (None, None))
+        if ta is None or tb is None:
+            continue
+        it = meta.get(c["id"], {})
+        items.append({
+            "id": c["id"], "name": it.get("name"), "city": it.get("city"),
+            "district": it.get("district"), "plate": it.get("plate"),
+            "latest_price": it.get("latest_price"),
+            "t_a": round(ta / 60.0, 1), "t_b": round(tb / 60.0, 1),
+            "score": round((weight * ta + (1 - weight) * tb) / 60.0, 1),
+        })
+    items.sort(key=lambda x: x["score"])
+    base = {
+        "originA": a, "originB": b, "mode": mode, "weight": weight,
+        "candidates": len(cand),
+        "matched": picked["total_matched"],
+        "with_coords": picked["with_coords"],
+        "truncated": picked["truncated"],
+        "stats": stats,
+    }
+    if err is not None:
+        # 预算/上游/超时：返回已计算部分 + 明确错误类型。
+        base.update({
+            "error": str(err), "error_type": err.kind,
+            "items": items[:limit],
+        })
+        return _COMMUTE_ERROR_STATUS.get(err.kind, 502), base
+    items = items[:limit]
+    base["items"] = items
+    return 200, base
+
+
 def _route(
     conn: sqlite3.Connection, raw_path: str
 ) -> tuple[int, object]:
@@ -296,89 +425,7 @@ def _route(
 
     # /api/commute  （双点加权通勤：OSRM 驾车 + 缓存）
     if path == "/api/commute":
-        from_a = _first(qs, "fromA")
-        from_b = _first(qs, "fromB")
-        mode = _first(qs, "mode") or "driving"
-        has_coord_a = _first(qs, "latA") is not None and _first(qs, "lngA") is not None
-        has_coord_b = _first(qs, "latB") is not None and _first(qs, "lngB") is not None
-        if (not from_a and not has_coord_a) or (not from_b and not has_coord_b):
-            return 400, {"error": "需要 fromA 与 fromB 两个地点"}
-        if mode not in ("driving", "transit"):
-            return 400, {"error": "mode 仅支持 driving / transit"}
-        try:
-            w = _strict_float(qs, "w", "权重")
-            school_max = _strict_float(qs, "school_max", "学校距离")
-            hospital_max = _strict_float(qs, "hospital_max", "医院距离")
-            hsr_max = _strict_float(qs, "hsr_max", "高铁距离")
-        except ValueError as exc:
-            return 400, {"error": str(exc)}
-        weight = 0.5 if w is None else max(0.0, min(1.0, w))
-        limit = _first_int(qs, "limit") or 20
-        limit = max(1, min(200, limit))
-        city = _first(qs, "city")
-
-        def _place(side: str) -> Optional[dict]:
-            """优先用前端从下拉选中的坐标（BD09），否则回退到百度 suggestion 解析。"""
-            text = _first(qs, "from" + side)
-            lat = _first(qs, "lat" + side)
-            lng = _first(qs, "lng" + side)
-            if lat is not None and lng is not None:
-                try:
-                    blat, blng = float(lat), float(lng)
-                except (TypeError, ValueError):
-                    return None
-                wlng, wlat = baidu.bd09_to_wgs84(blng, blat)
-                return {"name": text or "选中地点", "lat": wlat, "lng": wlng}
-            if not text:
-                return None
-            side_city = _first(qs, "city" + side) or city
-            return commute.resolve_place(text, side_city)
-
-        a = _place("A")
-        b = _place("B")
-        if not a or not b:
-            return 400, {"error": "无法解析地点，请从下拉中选择或换个更具体的名称"}
-        try:
-            res = catalog.query_catalog(
-                conn, city=city, district=_first(qs, "district"), page=1, page_size=200,
-                stage=_first(qs, "stage"), school_max=school_max,
-                grade=_first(qs, "grade"), hospital_max=hospital_max, hsr_max=hsr_max,
-            )
-        except ValueError as exc:
-            return 400, {"error": str(exc)}
-        ids = [it["id"] for it in res["items"]]
-        meta = {it["id"]: it for it in res["items"]}
-        if ids:
-            ph = ",".join("?" for _ in ids)
-            rows = conn.execute(f"SELECT id,lng,lat FROM xiaoqu WHERE id IN ({ph})", ids).fetchall()
-            coord = {r["id"]: (r["lng"], r["lat"]) for r in rows
-                     if r["lng"] is not None and r["lat"] is not None}
-            cand = [{"id": i, "lng": coord[i][0], "lat": coord[i][1]} for i in ids if i in coord]
-        else:
-            cand = []
-        # 公交按次计费：限制候选数，控制配额。
-        if mode == "transit":
-            cand = cand[:40]
-        try:
-            cached, _key = commute.commute_for(conn, a, b, cand, mode)
-        except Exception as exc:
-            return 400, {"error": f"通勤计算失败：{exc}"}
-        items = []
-        for c in cand:
-            ta, tb = cached.get(c["id"], (None, None))
-            if ta is None or tb is None:
-                continue
-            it = meta.get(c["id"], {})
-            items.append({
-                "id": c["id"], "name": it.get("name"), "city": it.get("city"),
-                "district": it.get("district"), "plate": it.get("plate"),
-                "latest_price": it.get("latest_price"),
-                "t_a": round(ta / 60.0, 1), "t_b": round(tb / 60.0, 1),
-                "score": round((weight * ta + (1 - weight) * tb) / 60.0, 1),
-            })
-        items.sort(key=lambda x: x["score"])
-        return 200, {"originA": a, "originB": b, "mode": mode, "weight": weight,
-                     "candidates": len(cand), "items": items[:limit]}
+        return _handle_commute(conn, qs)
 
     # /api/catalog  （小区目录：城市 / 区 / 关键词 / 价格 / 地铁 + 分页 + 排序）
     if path == "/api/catalog":
@@ -536,14 +583,23 @@ def make_handler(
             self._send_bytes(200, _content_type(target), body)
 
         def do_GET(self) -> None:  # noqa: N802  （http.server 约定方法名）
-            """处理 GET：``/api/`` 走路由输出 JSON，其余按静态文件服务。"""
+            """处理 GET：``/api/`` 走路由输出 JSON，其余按静态文件服务。
+
+            锁边界（P1-4）：``/api/commute`` 会发起慢速外部网络请求，不能持有
+            全 API 共用锁，否则会阻塞 ``/api/health`` 等即时接口。因此该路径在
+            锁外执行（其内部 DB 访问由独立短事务/连接处理）；其余接口只做本地
+            DB 读，继续在共用锁内串行，避免同一连接交叉执行。
+            """
             path = urlsplit(self.path).path
             if not path.startswith("/api/"):
                 self._serve_static(path)
                 return
             try:
-                with db_lock:
+                if path == "/api/commute":
                     status, obj = _route(conn, self.path)
+                else:
+                    with db_lock:
+                        status, obj = _route(conn, self.path)
             except Exception as exc:  # 防御：任何内部错误都返回 JSON 500
                 self._send_json(500, {"error": f"内部错误: {exc}"})
                 return

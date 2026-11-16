@@ -154,6 +154,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at   TEXT,
             PRIMARY KEY (key, community_id)
         );
+
+        CREATE TABLE IF NOT EXISTS place_cache (
+            k          TEXT PRIMARY KEY,
+            name       TEXT,
+            lat        REAL,
+            lng        REAL,
+            updated_at TEXT
+        );
         """
     )
     conn.commit()
