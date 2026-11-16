@@ -66,3 +66,82 @@ def test_iso_week_cross_year_uses_iso_year():
 def test_iso_week_matches_existing_library_format():
     assert fetch_fang._iso_week(datetime.date(2026, 11, 9)) == "2026-W46"
     assert fetch_fang._iso_week(datetime.date(2027, 1, 1)) == "2026-W53"
+
+
+# —— 调用点集成：温度只能落在推导出的当期周上 ——
+#
+# 上面几例只测 _current_week 本身。若 main() 里把入参写错（例如传 rows2019
+# 而非 cur），那些用例仍会全绿，但温度会被算到错误期次上。本用例跑真实的
+# main()，从产物库反查哪一期拿到了 temperature。
+
+def _rows2026(city="北京", xid="1", name="测试小区", week="2026-W46"):
+    return [{
+        "city": city, "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
+        "xiaoqu_name": name, "week": week, "price": "60000", "supply": "100",
+        "built_year": "2010", "mom1_pct": "-1.5", "source": "fang.com",
+    }]
+
+
+def _rows2019(city="北京", xid="9", name="测试小区", weeks=("2025-06", "2025-12", "2026-06")):
+    """同一小区多期历史。
+
+    期次需同时满足 sufficient() 的三条：≥3 期、跨度≥365 天、相邻缺口≤365 天。
+    2025-06 → 2026-11(W46) 跨度 533 天，各相邻缺口均 <365。
+    """
+    return [{
+        "city": city, "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
+        "xiaoqu_name": name, "week": w, "price": "50000", "source": "lianjia",
+        "lng": "116.48", "lat": "39.99",
+    } for w in weeks]
+
+
+def _run_main(monkeypatch, tmp_path, rows2026, rows2019):
+    """在临时目录跑一次 main()，返回 {week: temperature} 映射。"""
+    import sqlite3
+
+    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
+    monkeypatch.setattr(
+        build_db, "read_csv",
+        lambda name: rows2026 if name == "fang_2026.csv" else rows2019,
+    )
+    build_db.main()
+
+    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    try:
+        return dict(conn.execute(
+            "SELECT week, temperature FROM xiaoqu_metric_weekly"
+        ).fetchall())
+    finally:
+        conn.close()
+
+
+def test_temperature_lands_only_on_derived_current_week(monkeypatch, tmp_path):
+    temps = _run_main(
+        monkeypatch, tmp_path,
+        _rows2026(week="2026-W46"), _rows2019(),
+    )
+    # 当期周由 2026 CSV 推导为 2026-W46，只有这一期允许有温度。
+    assert temps["2026-W46"] is not None
+    assert temps["2025-06"] is None
+    assert temps["2025-12"] is None
+    assert temps["2026-06"] is None
+
+
+def test_temperature_follows_csv_week_instead_of_hardcoded_one(monkeypatch, tmp_path):
+    """CSV 换成 W47 后，温度必须落在 W47——这条会在硬编码复发时失败。"""
+    temps = _run_main(
+        monkeypatch, tmp_path,
+        _rows2026(week="2026-W47"), _rows2019(),
+    )
+    assert temps["2026-W47"] is not None
+    assert temps["2025-06"] is None
+    assert temps["2026-06"] is None
+
+
+def test_whitespace_in_week_does_not_block_temperature(monkeypatch, tmp_path):
+    """week 带首尾空白时，推导值与入库值必须一致，否则温度静默丢失。"""
+    temps = _run_main(
+        monkeypatch, tmp_path,
+        _rows2026(week=" 2026-W46 "), _rows2019(),
+    )
+    assert temps["2026-W46"] is not None

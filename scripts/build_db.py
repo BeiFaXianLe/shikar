@@ -85,7 +85,7 @@ def main():
         pct = to_float(r.get("mom1_pct"))
         if pct is not None:
             mom = pct / 100.0
-        metrics.append((xid, r["week"], to_float(r["price"]), to_int(r.get("supply")), mom))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), to_int(r.get("supply")), mom))
 
     # 2019 历史
     matched = 0
@@ -103,7 +103,7 @@ def main():
         else:
             xid = f'{city}|2019|{r["xiaoqu_id"]}'
             add_xq(xid, city, r["district"], r.get("plate") or None, name, lng=lng, lat=lat)
-        metrics.append((xid, r["week"], to_float(r["price"]), None, None))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), None, None))
 
     # —— 数据充足度：≥3 期、跨度≥365天、相邻缺口≤365天，才允许计算温度/阶段 ——
     from datetime import date
