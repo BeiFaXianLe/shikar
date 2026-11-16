@@ -6,6 +6,7 @@
 |---|---|---|
 | `history2019.csv` | 链家 2019 全量小区快照（公开数据集） | 北京 10101 / 天津 6523 |
 | `fang_2026.csv` | 房天下 2026 当期小区快照（公开聚合页抓取，已去重） | 1955 |
+| `SNAPSHOT_LOG.md` | 每周快照留痕（日期 / 京津小区数 / 指标期数分布 / 是否限流） | 见文件 |
 | `shikar.db` | **构建产物（不随仓库提交，已加入 .gitignore）**：由上面两份 CSV 运行 `scripts/build_db.py` 生成 | 17439 小区 / 18579 指标 |
 | `subway/` | 北京/天津真实地铁线路与站点（WGS84）与导入脚本所需 GeoJSON | 见 `subway/README.md` |
 
@@ -16,6 +17,11 @@
 python scripts/build_db.py          # -> data/shikar.db（构建产物，不提交）
 ```
 > `data/shikar.db` 是构建产物、不纳入版本库；clone 后先运行本命令生成基础库。地铁关系表在首次启动时自动导入（见下），也可显式预构建。`subway_line.updated_at` 取源数据版本，重复构建结果可复现（逐字节一致）。
+>
+> ⚠️ **`build_db.py` 会删除 `data/shikar.db` 再重建，但只重建 `xiaoqu` / `xiaoqu_metric_weekly` 两张表**，
+> 不重建 POI（`poi` / `community_poi`）与地铁关系表（`subway_*` / `community_subway*`）——POI 需重新调用
+> 百度 Places API（配额有限）。若库内已有这些表，重建前请先备份 `shikar.db`，重建后按原 schema 还原。
+> 后端服务运行时会持有该文件锁，重建前需先停服。详见 `SNAPSHOT_LOG.md` 的维护备注。
 
 ## 重建地铁关系表（P1）
 ```powershell
