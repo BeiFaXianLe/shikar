@@ -6,7 +6,7 @@
   python scripts/fetch_fang.py --city bj --pages 100 --delay 1.5
   python scripts/fetch_fang.py --city tj --pages 100 --delay 1.5
 """
-import argparse, csv, os, re, sys, time, urllib.request
+import argparse, csv, datetime, os, re, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data", "fang_2026.csv")
@@ -22,6 +22,12 @@ def opener():
     if PROXY:
         return urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
     return urllib.request.build_opener()
+
+
+def _iso_week(d=None):
+    """返回 ISO 8601 周次 "YYYY-Www"（ISO 年 + ISO 周号，跨年周归属 ISO 年）。"""
+    iso = (d or datetime.date.today()).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
 
 
 def get(op, url, ref):
@@ -68,7 +74,7 @@ def main():
     ap.add_argument("--pages", type=int, default=100)
     ap.add_argument("--delay", type=float, default=1.5)
     a = ap.parse_args()
-    cname = CITIES[a.city]; week = time.strftime("%Y-W%V")
+    cname = CITIES[a.city]; week = _iso_week()
     rows = load_existing(); before = len(rows); added = 0
     op = opener()
     for page in range(1, a.pages + 1):
