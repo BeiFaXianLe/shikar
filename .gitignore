@@ -15,3 +15,6 @@ venv/
 data/shikar.db
 
 .secrets/
+
+# 多智能体编排产物（spec/evidence/日志）
+.agent/
