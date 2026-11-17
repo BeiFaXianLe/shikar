@@ -16,6 +16,13 @@ from shikar import storage, scoring  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 
+# 没有 CSV 来源、重建时必须原样保留的表。
+# poi / community_poi 由 build_poi.py / osm_poi.py / fetch_hsr.py 采集；
+# signal_event / source_snapshot 由运行期写入。这些表在 build_db.py 重建时若不显式
+# 备份回灌，就会被清空（曾经导致线上学校/医院/高铁站三页全空）。
+PRESERVED_TABLES = ("signal_event", "source_snapshot")
+
+
 
 def read_csv(name):
     path = os.path.join(DATA, name)
@@ -44,20 +51,23 @@ def to_int(v):
 
 
 def load_poi(db):
-    """删除旧库前，把 poi / community_poi 的全部行读进内存。
+    """删除旧库前，把 poi / community_poi / signal_event / source_snapshot 的全部行读进内存。
 
-    返回 (poi_rows, rel_rows, err)。旧库不存在、或旧库没有 poi 表（首次部署）时
-    返回空列表，构建照常进行；旧库读失败则把错误放在 err 里，由 main 中止构建。
+    返回 (poi_rows, rel_rows, extra_rows, err)。extra_rows 是 {表名: (列名列表, 行列表)}，
+    存放同样没有 CSV 来源、重建时必须原样保留的表（signal_event / source_snapshot）。
+
+    旧库不存在、或旧库没有 poi 表（首次部署）时返回空列表，构建照常进行；
+    旧库读失败则把错误放在 err 里，由 main 中止构建。
     """
     if not os.path.exists(db):
-        return [], [], None
+        return [], [], {}, None
     try:
         # 只读打开：绝不能因为备份反而改动旧库
         old = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)
         try:
             tables = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "poi" not in tables:
-                return [], [], None
+                return [], [], {}, None
             poi_rows = old.execute(
                 "SELECT id,type,subtype,name,city,grade,lat,lng,district,address,source,version FROM poi"
             ).fetchall()
@@ -66,25 +76,34 @@ def load_poi(db):
                 rel_rows = old.execute(
                     "SELECT community_id,poi_id,distance_km FROM community_poi"
                 ).fetchall()
-            return poi_rows, rel_rows, None
+            extra_rows = {}
+            for t in PRESERVED_TABLES:
+                if t in tables:
+                    cols = [r[1] for r in old.execute("PRAGMA table_info(%s)" % t)]
+                    rows = old.execute("SELECT %s FROM %s" % (",".join(cols), t)).fetchall()
+                    if rows:
+                        extra_rows[t] = (cols, rows)
+            return poi_rows, rel_rows, extra_rows, None
         finally:
             old.close()
     except sqlite3.Error as e:
-        return [], [], str(e)
+        return [], [], {}, str(e)
 
 
-def restore_poi(conn, poi_rows, rel_rows):
-    """把 load_poi 备份的 POI 行写回新库，返回 (poi 行数, 关联行数)。
+def restore_poi(conn, poi_rows, rel_rows, extra_rows=None):
+    """把 load_poi 备份的数据写回新库，返回 (poi 行数, 关联行数, 其他表行数字典)。
 
     - poi 整行按原样写回（含手动打的 grade / version 标签）。
     - community_poi 只写新库里 xiaoqu 仍存在、且 poi 已回灌的行，跳过孤儿关联，
       避免外键/主键冲突让整个 refresh 失败。
+    - signal_event / source_snapshot 按原主键（AUTOINCREMENT 的 id）整行写回，
+      保住历史事件与快照的 id 不变；xiaoqu 已不存在的行同样跳过，避免外键问题。
     """
-    if not poi_rows:
-        return 0, 0
-    cols = "id,type,subtype,name,city,grade,lat,lng,district,address,source,version"
-    conn.executemany(f"INSERT OR REPLACE INTO poi ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", poi_rows)
-    n_poi = len(poi_rows)
+    n_poi = 0
+    if poi_rows:
+        cols = "id,type,subtype,name,city,grade,lat,lng,district,address,source,version"
+        conn.executemany(f"INSERT OR REPLACE INTO poi ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", poi_rows)
+        n_poi = len(poi_rows)
 
     n_rel = 0
     if rel_rows:
@@ -99,7 +118,27 @@ def restore_poi(conn, poi_rows, rel_rows):
         n_rel = len(alive)
         if len(alive) != len(rel_rows):
             print(f"  community_poi 跳过孤儿关联 {len(rel_rows) - len(alive)} 行（小区已不在库中）")
-    return n_poi, n_rel
+
+    extra_counts = {}
+    for t, (cols, rows) in (extra_rows or {}).items():
+        new_xq = {r[0] for r in conn.execute("SELECT id FROM xiaoqu")}
+        # xiaoqu_id 可为 NULL（source_snapshot 允许），只丢弃指向已消失小区的行
+        idx = cols.index("xiaoqu_id") if "xiaoqu_id" in cols else None
+        if idx is None:
+            alive = rows
+        else:
+            alive = [r for r in rows if r[idx] is None or r[idx] in new_xq]
+        del new_xq
+        conn.executemany(
+            "INSERT OR REPLACE INTO %s (%s) VALUES (%s)"
+            % (t, ",".join(cols), ",".join("?" * len(cols))),
+            alive,
+        )
+        extra_counts[t] = len(alive)
+        if len(alive) != len(rows):
+            print(f"  {t} 跳过 {len(rows) - len(alive)} 行（关联小区已不在库中）")
+    return n_poi, n_rel, extra_counts
+
 
 
 def main():
@@ -186,7 +225,7 @@ def main():
     db = os.path.join(DATA, "shikar.db")
     # POI 数据没有外部 CSV 来源（由 build_poi.py / osm_poi.py / fetch_hsr.py 采集入库），
     # 重建前先备份，重建后回灌，否则每周 refresh 会把 poi / community_poi 清空。
-    saved_poi, saved_rel, poi_err = load_poi(db)
+    saved_poi, saved_rel, saved_extra, poi_err = load_poi(db)
     if poi_err:
         # 旧库读不出来时，宁可先不删库，等人工处理，也不要静默丢数据
         sys.exit(f"读取旧库 poi 失败，已中止以免丢失 POI：{poi_err}")
@@ -223,15 +262,20 @@ def main():
             })
             n_metric += 1
 
-        n_poi, n_rel = restore_poi(conn, saved_poi, saved_rel)
+        n_poi, n_rel, n_extra = restore_poi(conn, saved_poi, saved_rel, saved_extra)
         conn.commit()
 
-        # 交付前校验：POI 数量必须与备份一致，否则视为构建失败（不替换旧库）。
+        # 交付前校验：备份了几行就必须写回几行（孤儿行会被显式跳过并打印），
+        # 数量不符视为构建失败，保留旧库不动。
         if len(saved_poi) != n_poi:
             sys.exit(f"POI 回灌数量不符：备份 {len(saved_poi)} 行，写入 {n_poi} 行；已保留旧库不动")
+        for t, (cols, rows) in saved_extra.items():
+            if n_extra.get(t, 0) > len(rows):
+                sys.exit(f"{t} 回灌数量异常：备份 {len(rows)} 行，写入 {n_extra[t]} 行；已保留旧库不动")
 
+        extra_desc = "".join(f" {t}={n_extra[t]}" for t in sorted(n_extra))
         print(f"xiaoqu={len(xiaoqu)} metrics={n_metric} matched2019={matched} temp_rows={n_temp} "
-              f"poi={n_poi} community_poi={n_rel}")
+              f"poi={n_poi} community_poi={n_rel}{extra_desc}")
         for row in conn.execute("SELECT city, COUNT(*) c FROM xiaoqu GROUP BY city"):
             print(f"  {row['city']}: {row['c']}")
     except BaseException:
@@ -247,9 +291,18 @@ def main():
     prev_db = db + ".prev"
     if os.path.exists(prev_db):
         os.remove(prev_db)
-    if os.path.exists(db):
-        os.replace(db, prev_db)
-    os.replace(tmp_db, db)
+    try:
+        if os.path.exists(db):
+            os.replace(db, prev_db)
+        os.replace(tmp_db, db)
+    except OSError as e:
+        # Windows 上若有进程仍持有 db 连接，rename 会失败（PermissionError/WinError 32）。
+        # 此时旧库仍完好、新库在 .building 里，只需停掉占用进程后重跑。
+        sys.exit(
+            "替换数据库失败（旧库未动，新库保留在 %s）：%s\n"
+            "  常见原因：有进程仍持有 %s 的连接（如本地调试服务未退出）。\n"
+            "  处理：停掉占用进程后重跑 build_db.py。" % (tmp_db, e, db)
+        )
     print("db ->", db)
 
 
