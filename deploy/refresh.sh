@@ -42,6 +42,8 @@ if python3 scripts/build_db.py; then
   python3 scripts/ingest_history.py --csv data/fang_preview_all.csv --db data/shikar.db || echo "ingest history skipped/failed"
   # 重建成功后刷一次备份，保证「备份 = 当前库 + 当前 CSV」
   python3 scripts/backup_critical.py backup --keep 12 || echo "WARN: 关键数据备份失败（继续）"
+  # 推送到私有 GitHub 仓库做异地容灾（失败不阻塞刷新）
+  python3 scripts/push_backup.py || echo "WARN: 异地备份推送失败（本地备份仍保留）"
   echo "restarting shikar"
   sudo -n systemctl restart shikar && echo "shikar restarted"
 else
