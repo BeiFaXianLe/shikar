@@ -18,3 +18,7 @@ data/shikar.db
 
 # 多智能体编排产物（spec/evidence/日志）
 .agent/
+
+data/backups/
+data/shikar.db.fullbak
+
