@@ -30,3 +30,7 @@ data/fang_preview_all.csv
 # 推送备份到私有仓库时的临时工作区
 .backup-repo/
 
+
+# 恢复备份时旧文件的留档
+*.pre-restore
+
