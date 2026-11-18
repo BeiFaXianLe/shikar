@@ -142,13 +142,30 @@ def main():
     run(["git", "config", "user.email", "backup@local"], cwd=WORK_DIR)
     run(["git", "add", "-A"], cwd=WORK_DIR)
     run(["git", "commit", "-q", "-m", "backup: %s" % os.path.basename(src)], cwd=WORK_DIR)
-    run(["git", "remote", "add", "origin", a.remote], cwd=WORK_DIR)
+
+    # 认证：优先 GH_TOKEN 环境变量（服务器上用 .secrets/gh-token 提供），
+    # 其次 gh CLI 已登录的凭据。token 只注入到 remote URL，不落盘到文件。
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    remote_url = a.remote
+    if token:
+        if remote_url.startswith("https://"):
+            remote_url = remote_url.replace("https://", "https://x-access-token:%s@" % token, 1)
+        run(["git", "config", "credential.helper", ""], cwd=WORK_DIR, check=False)
+    else:
+        # 没有 token 时退回 gh 的 credential helper
+        gh = shutil.which("gh")
+        if gh:
+            run(["git", "config", "credential.helper", "%s auth git-credential" % gh], cwd=WORK_DIR, check=False)
+
+    run(["git", "remote", "add", "origin", remote_url], cwd=WORK_DIR)
 
     print("推送中…")
     out = run(["git", "push", "-f", "origin", BRANCH], cwd=WORK_DIR, check=False)
-    if "error" in out.lower() or "fatal" in out.lower() or "rejected" in out.lower():
-        print(out[-1500:])
-        print("\n推送失败。请确认 gh 已登录或设置了 GH_TOKEN。")
+    # 输出里可能回显带 token 的 URL，脱敏后再打印
+    safe = out.replace(token, "***") if token else out
+    if "error" in safe.lower() or "fatal" in safe.lower() or "rejected" in safe.lower():
+        print(safe[-1500:])
+        print("\n推送失败。请确认 GH_TOKEN 有效，或本机 gh 已登录。")
         sys.exit(1)
     print("推送完成")
 

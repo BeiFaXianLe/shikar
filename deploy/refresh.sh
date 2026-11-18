@@ -4,6 +4,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 echo "refresh start $(date '+%F %T %Z')"
 
+# 异地备份推送需要 GitHub token（.secrets/gh-token，由 deploy/set-gh-token.sh 写入）。
+# 读不到就跳过推送，本地备份仍然保留。
+if [ -f .secrets/gh-token ]; then
+  GH_TOKEN=$(cat .secrets/gh-token)
+  export GH_TOKEN
+fi
+
 # 1) 更新当期快照（房天下公开聚合）
 python3 scripts/fetch_fang.py --city bj --pages 100 --delay 1.5 || echo "fetch bj failed (continue)"
 python3 scripts/fetch_fang.py --city tj --pages 100 --delay 1.5 || echo "fetch tj failed (continue)"
