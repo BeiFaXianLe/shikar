@@ -22,3 +22,7 @@ data/shikar.db
 data/backups/
 data/shikar.db.fullbak
 
+
+# 累积的历史成交样本：数据资产，只进私有备份仓库，不进公开代码仓库
+data/fang_preview_all.csv
+
