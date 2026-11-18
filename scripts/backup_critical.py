@@ -1,32 +1,59 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""备份 / 恢复「不可重建」数据（poi、community_poi、signal_event、source_snapshot）。
+"""备份 / 恢复 shikar 的「不可再生」数据。
 
-为什么单独做这个脚本：
-  整库 shikar.db 有 248MB，但其中 xiaoqu / xiaoqu_metric_weekly / subway_* 都能从
-  CSV / GeoJSON 重建。真正不可再生的只有 POI 关系与运行期事件，压缩后约 4MB。
-  按整库备份既浪费磁盘（服务器只剩 14G）又慢，按「不可重建表」备份才是正确粒度。
+## 为什么需要这个脚本
 
-用法：
-  python3 scripts/backup_critical.py backup  [--out-dir data/backups] [--keep 8]
-  python3 scripts/backup_critical.py restore --file data/backups/critical-YYYYmmdd.sql.gz
+shikar 有两类数据，价值与可重建性完全不同：
+
+**A. 可重建（不必单独备份，有源文件即可）**
+   - xiaoqu / xiaoqu_metric_weekly  ← data/fang_2026.csv + data/history2019.csv
+   - subway_*                       ← data/subway/*.geojson
+   这些丢了重跑 build_db.py 就回来。
+
+**B. 不可再生（必须备份）**
+   - data/fang_preview_all.csv      ← **每周追加 500 条历史成交，丢一周就永久缺失**
+   - data/fang_2026.csv             ← 当期快照（每周覆盖，但历史版本有追溯价值）
+   - data/history2019.csv           ← 静态公开数据集（可重下，但成本高）
+   - poi / community_poi 表         ← 由百度 POI 采集（需 API 配额）
+   - signal_event / source_snapshot ← 运行期产生
+
+本脚本同时备份 B 类的 **CSV 文件** 和 **数据库表**。
+CSV 才是根本：数据库里的历史成交是由 fang_preview_all.csv 经 ingest_history.py 灌进去的，
+所以只要 CSV 在，库随时能重建；反之 CSV 丢了，库里的数据也只是这一份副本。
+
+## 用法
+
+  python3 scripts/backup_critical.py backup  [--out-dir data/backups] [--keep 12]
+  python3 scripts/backup_critical.py restore --file data/backups/critical-YYYYmmdd_HHMMSS.tar.gz
   python3 scripts/backup_critical.py list    [--out-dir data/backups]
 
-备份文件是可读的 SQL（gzip 压缩），用 sqlite3 或本脚本都能恢复。
+备份产物是 tar.gz，内含：
+  files/   ← 原始 CSV（原样保存，可直接用）
+  db.sql   ← 不可再生表的 INSERT 语句
 """
 import argparse
 import glob
 import gzip
+import io
 import os
 import sqlite3
 import sys
+import tarfile
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB = os.path.join(ROOT, "data", "shikar.db")
 DEFAULT_OUT = os.path.join(ROOT, "data", "backups")
 
-# 不可从 CSV / GeoJSON 重建的表；顺序即恢复顺序（poi 先于 community_poi）
+# 不可从其他来源重建、必须原样保存的文件（相对 ROOT）
+CRITICAL_FILES = (
+    "data/fang_preview_all.csv",   # 每周追加的历史成交样本，最珍贵
+    "data/fang_2026.csv",          # 当期快照，历史版本有追溯价值
+    "data/history2019.csv",        # 静态公开数据集
+)
+
+# 不可从 CSV 重建的表；顺序即恢复顺序（poi 先于 community_poi）
 CRITICAL_TABLES = ("poi", "community_poi", "signal_event", "source_snapshot")
 
 
@@ -39,21 +66,15 @@ def _sql_literal(v):
     return "'" + s + "'"
 
 
-def dump_table(conn, table, out):
-    """把一张表导出成 DELETE + INSERT 语句，逐批写入 out（避免大表占满内存）。
-
-    out 是 gzip 文件对象，只接受 bytes，所以每段都要 encode。
-    """
-    def w(s):
-        out.write(s.encode("utf-8"))
-
+def dump_table_sql(conn, table, out):
+    """把一张表导出成 DELETE + INSERT 语句写入 out（StringIO，按批 flush 避免占内存）。"""
     cols = [r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)]
     if not cols:
-        w("-- 表 %s 不存在，跳过\n" % table)
+        out.write("-- 表 %s 不存在，跳过\n" % table)
         return 0
     total = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
-    w("-- %s: %d 行\n" % (table, total))
-    w("DELETE FROM %s;\n" % table)
+    out.write("-- %s: %d 行\n" % (table, total))
+    out.write("DELETE FROM %s;\n" % table)
     if total == 0:
         return 0
 
@@ -72,40 +93,63 @@ def dump_table(conn, table, out):
             )
             n += 1
         if len(buf) >= 5000:
-            w("".join(buf))
+            out.write("".join(buf))
             buf = []
     if buf:
-        w("".join(buf))
+        out.write("".join(buf))
     return n
 
 
 def cmd_backup(args):
     db = args.db
-    if not os.path.exists(db):
-        sys.exit("数据库不存在：%s" % db)
     out_dir = args.out_dir
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(out_dir, "critical-%s.sql.gz" % ts)
+    path = os.path.join(out_dir, "critical-%s.tar.gz" % ts)
 
-    conn = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)
-    try:
-        with gzip.open(path, "wb", compresslevel=6) as gz:
-            gz.write(("-- shikar 关键数据备份 %s\n" % ts).encode("utf-8"))
-            gz.write(("-- 表: %s\n\n" % ", ".join(CRITICAL_TABLES)).encode("utf-8"))
-            counts = {}
+    file_stats = {}
+    table_counts = {}
+    sql_buf = io.StringIO()
+    sql_buf.write("-- shikar 不可再生表备份 %s\n" % ts)
+    sql_buf.write("-- 表: %s\n\n" % ", ".join(CRITICAL_TABLES))
+
+    if os.path.exists(db):
+        conn = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)
+        try:
             for t in CRITICAL_TABLES:
-                counts[t] = dump_table(conn, t, gz)
-    finally:
-        conn.close()
+                table_counts[t] = dump_table_sql(conn, t, sql_buf)
+        finally:
+            conn.close()
+    else:
+        sql_buf.write("-- 数据库不存在，跳过表备份\n")
+
+    with tarfile.open(path, "w:gz") as tar:
+        # 1. 原始文件（最珍贵：CSV 丢了无法再生）
+        for rel in CRITICAL_FILES:
+            full = os.path.join(ROOT, rel)
+            if not os.path.exists(full):
+                file_stats[rel] = None
+                continue
+            tar.add(full, arcname="files/" + os.path.basename(rel))
+            file_stats[rel] = os.path.getsize(full)
+        # 2. 不可再生表的 SQL
+        data = sql_buf.getvalue().encode("utf-8")
+        info = tarfile.TarInfo("db.sql")
+        info.size = len(data)
+        info.mtime = int(datetime.now().timestamp())
+        tar.addfile(info, io.BytesIO(data))
 
     size = os.path.getsize(path)
     print("备份完成: %s (%.2f MB)" % (path, size / 1e6))
-    for t, n in counts.items():
-        print("  %-18s %d 行" % (t, n))
+    print("  文件:")
+    for rel, sz in file_stats.items():
+        print("    %-32s %s" % (os.path.basename(rel), "缺失" if sz is None else "%.1f KB" % (sz / 1024)))
+    print("  表:")
+    for t, n in table_counts.items():
+        print("    %-32s %d 行" % (t, n))
 
     # 轮转：只保留最近 keep 份
-    files = sorted(glob.glob(os.path.join(out_dir, "critical-*.sql.gz")))
+    files = sorted(glob.glob(os.path.join(out_dir, "critical-*.tar.gz")))
     if args.keep > 0 and len(files) > args.keep:
         for old in files[: len(files) - args.keep]:
             os.remove(old)
@@ -118,35 +162,55 @@ def cmd_restore(args):
     path = args.file
     if not os.path.exists(path):
         sys.exit("备份文件不存在：%s" % path)
-    if not os.path.exists(db):
-        sys.exit("目标数据库不存在：%s（请先跑 build_db.py）" % db)
 
-    with gzip.open(path, "rb") as f:
-        sql = f.read().decode("utf-8")
+    restored_files = []
+    sql = None
+    with tarfile.open(path, "r:gz") as tar:
+        for m in tar.getmembers():
+            if not m.isfile():
+                continue
+            f = tar.extractfile(m)
+            if f is None:
+                continue
+            if m.name.startswith("files/"):
+                base = os.path.basename(m.name)
+                target = os.path.join(ROOT, "data", base)
+                # 覆盖前把旧文件留一份 .pre-restore，避免误覆盖无法回退
+                if os.path.exists(target):
+                    os.replace(target, target + ".pre-restore")
+                with open(target, "wb") as o:
+                    o.write(f.read())
+                restored_files.append(base)
+            elif m.name == "db.sql":
+                sql = f.read().decode("utf-8")
 
-    conn = sqlite3.connect(db)
-    try:
-        # community_poi 有外键指向 xiaoqu / poi，恢复期间先关掉外键检查，
-        # 恢复完再统一校验，避免顺序问题导致整体失败。
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.executescript(sql)
-        conn.commit()
-        bad = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if bad:
-            print("⚠ 恢复后发现 %d 条外键违规（可能是备份来自不同版本的小区数据）" % len(bad))
-        for t in CRITICAL_TABLES:
-            try:
-                n = conn.execute("SELECT COUNT(*) FROM %s" % t).fetchone()[0]
-                print("  %-18s %d 行" % (t, n))
-            except sqlite3.Error:
-                pass
-        print("恢复完成: %s" % db)
-    finally:
-        conn.close()
+    print("已恢复文件: %s" % (", ".join(restored_files) if restored_files else "无"))
+
+    if sql and os.path.exists(db):
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.executescript(sql)
+            conn.commit()
+            bad = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                print("⚠ 恢复后发现 %d 条外键违规（备份可能来自不同版本的小区数据）" % len(bad))
+            for t in CRITICAL_TABLES:
+                try:
+                    n = conn.execute("SELECT COUNT(*) FROM %s" % t).fetchone()[0]
+                    print("  %-18s %d 行" % (t, n))
+                except sqlite3.Error:
+                    pass
+        finally:
+            conn.close()
+    elif sql:
+        print("⚠ 数据库不存在（%s），只恢复了文件。先跑 build_db.py 再恢复表。" % db)
+
+    print("恢复完成")
 
 
 def cmd_list(args):
-    files = sorted(glob.glob(os.path.join(args.out_dir, "critical-*.sql.gz")))
+    files = sorted(glob.glob(os.path.join(args.out_dir, "critical-*.tar.gz")))
     if not files:
         print("无备份文件（目录 %s）" % args.out_dir)
         return

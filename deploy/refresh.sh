@@ -14,15 +14,18 @@ python3 scripts/sample_fang_preview.py --city tj --n 200 --workers 4 --out data/
 
 # 3) 备份 + 重建库
 # 备份策略（服务器磁盘仅剩 ~14G，整库 248M，不能堆多份）：
-#   a. 关键表轻量备份：poi / community_poi / signal_event / source_snapshot 压缩后约 4MB，
-#      保留 8 份 ≈ 32MB。这些表不可从 CSV 重建，是最该保护的数据。
+#   a. 不可再生数据备份（tar.gz，含 CSV + 关键表，约 0.6MB）：
+#        - data/fang_preview_all.csv  ← 每周追加 500 条历史成交，**丢了永久缺失**
+#        - data/fang_2026.csv / history2019.csv
+#        - poi / community_poi / signal_event / source_snapshot 表
+#      保留 12 份 ≈ 7MB。
 #   b. 整库快照：只保留 1 份（最近一次），供整库回滚用。
 #   c. build_db.py 自己还会留 shikar.db.prev（原子替换前的旧库）。
 TS=$(date '+%Y%m%d')
 mkdir -p data/backups
 
-# a. 关键表备份（失败不阻塞刷新，但要显式告警）
-python3 scripts/backup_critical.py backup --keep 8 || echo "WARN: 关键表备份失败（继续）"
+# a. 不可再生数据备份（失败不阻塞刷新，但要显式告警）
+python3 scripts/backup_critical.py backup --keep 12 || echo "WARN: 关键数据备份失败（继续）"
 
 # b. 整库快照，只留 1 份
 if [ -f data/shikar.db ]; then
@@ -34,9 +37,11 @@ fi
 
 if python3 scripts/build_db.py; then
   echo "build_db ok; re-ingesting history sample"
+  # 这一步把 fang_preview_all.csv 的历史成交灌进库。CSV 已在上方备份，
+  # 所以即使库被重建，历史数据也能从这个 CSV 完整恢复。
   python3 scripts/ingest_history.py --csv data/fang_preview_all.csv --db data/shikar.db || echo "ingest history skipped/failed"
-  # 重建成功后再刷一次关键表备份，保证「备份 = 当前库」
-  python3 scripts/backup_critical.py backup --keep 8 || echo "WARN: 关键表备份失败（继续）"
+  # 重建成功后刷一次备份，保证「备份 = 当前库 + 当前 CSV」
+  python3 scripts/backup_critical.py backup --keep 12 || echo "WARN: 关键数据备份失败（继续）"
   echo "restarting shikar"
   sudo -n systemctl restart shikar && echo "shikar restarted"
 else
