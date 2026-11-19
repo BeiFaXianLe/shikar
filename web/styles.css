@@ -528,6 +528,16 @@ a:hover { color: var(--hot); border-bottom-color: var(--hot); }
 .poi-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 14px; border-bottom: 1px solid var(--ink); padding-bottom: 10px; }
 .poi-tab { font-family: var(--serif); border: 1px solid var(--rule); background: transparent; color: var(--ink-soft); padding: 5px 12px; cursor: pointer; font-size: 14px; letter-spacing: 0.04em; }
 .poi-tab.on { background: var(--ink); color: var(--paper-hi); border-color: var(--ink); }
+/* POI 搜索框：与 .catalog-input 保持同一视觉语言（直角、细边、focus 用冷色描边） */
+.poi-search {
+  flex: 1 1 220px; min-width: 180px; margin-left: auto;
+  background: transparent; border: 1px solid var(--rule); border-radius: 0;
+  color: var(--ink); font-family: var(--sans); font-size: 14px; padding: 6px 10px;
+}
+.poi-search::placeholder { color: var(--ink-soft); opacity: .7; }
+.poi-search:focus { outline: 2px solid var(--cold); outline-offset: 1px; border-color: var(--ink); }
+.poi-query-hint { display: flex; align-items: center; gap: 10px; margin: -6px 0 12px; font-size: 13px; color: var(--ink-soft); }
+.poi-query-hint .poi-tab { padding: 2px 10px; font-size: 13px; }
 .poi-list { display: flex; flex-direction: column; }
 .poi-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 11px 4px; border-bottom: 1px dotted var(--rule); color: var(--ink); border-top: none; }
 .poi-row:hover { background: rgba(23,35,42,.04); }

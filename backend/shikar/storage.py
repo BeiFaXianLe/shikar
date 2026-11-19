@@ -377,7 +377,8 @@ def upsert_community_poi(conn: sqlite3.Connection, community_id: str, poi_id: st
 
 def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
               grade: str | None = None, district: str | None = None,
-              city: str | None = None) -> list[dict]:
+              city: str | None = None, q: str | None = None) -> list[dict]:
+    """列出某类 POI，可按阶段/等级/区/城市过滤，``q`` 为名称或地址包含匹配（大小写不敏感）。"""
     sql = ("SELECT p.*, "
            "(SELECT COUNT(*) FROM community_poi cp WHERE cp.poi_id = p.id) AS community_count "
            "FROM poi p WHERE p.type = ?")
@@ -390,6 +391,11 @@ def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
         sql += " AND p.city = ?"; params.append(city)
     if district:
         sql += " AND p.district LIKE ?"; params.append(district + "%")
+    if q is not None and q.strip() != "":
+        # 名称或地址包含匹配；与小区目录的 q 语义保持一致（lower + LIKE）
+        sql += " AND (lower(p.name) LIKE lower(?) OR lower(COALESCE(p.address,'')) LIKE lower(?))"
+        like = "%" + q.strip() + "%"
+        params += [like, like]
     sql += " ORDER BY p.name ASC"
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 

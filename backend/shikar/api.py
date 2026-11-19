@@ -236,21 +236,22 @@ def _route(
     if path == "/api/subway/lines":
         return 200, subway.list_lines(conn, city=_first(qs, "city"))
 
-    # /api/schools  （学校明细：阶段 / 城市 / 区）
+    # /api/schools  （学校明细：阶段 / 城市 / 区 / 搜索）
     if path == "/api/schools":
         return 200, {"items": storage.list_pois(
             conn, "school", subtype=_first(qs, "stage"), district=_first(qs, "district"),
-            city=_first(qs, "city"))}
+            city=_first(qs, "city"), q=_first(qs, "q"))}
 
-    # /api/hospitals  （医院明细：等级 / 城市 / 区）
+    # /api/hospitals  （医院明细：等级 / 城市 / 区 / 搜索）
     if path == "/api/hospitals":
         return 200, {"items": storage.list_pois(
             conn, "hospital", grade=_first(qs, "grade"), district=_first(qs, "district"),
-            city=_first(qs, "city"))}
+            city=_first(qs, "city"), q=_first(qs, "q"))}
 
-    # /api/hsr  （高铁站明细）
+    # /api/hsr  （高铁站明细 / 搜索）
     if path == "/api/hsr":
-        return 200, {"items": storage.list_pois(conn, "hsr", city=_first(qs, "city"))}
+        return 200, {"items": storage.list_pois(
+            conn, "hsr", city=_first(qs, "city"), q=_first(qs, "q"))}
 
     # /api/poi/{id}/communities  （某学校/医院/高铁站周边小区 Top N）
     if path.startswith("/api/poi/") and path.endswith("/communities"):

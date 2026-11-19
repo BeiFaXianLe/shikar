@@ -1,0 +1,13 @@
+# 强制 shell 脚本使用 LF：Windows 上 core.autocrlf=true 会把 .sh 转成 CRLF，
+# 上传到 Linux 后 bash 会报 "syntax error: unexpected end of file from `if' command"。
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# Python 同理，避免 shebang 行尾 \r 导致 "bad interpreter"
+*.py   text eol=lf
+
+# 其余保持仓库默认（Windows 检出为 CRLF）
+*.md   text
+*.json text
+*.yml  text
+*.yaml text
