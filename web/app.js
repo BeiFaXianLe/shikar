@@ -1730,7 +1730,11 @@
       grades: [["", "全部"], ["三甲", "三甲"], ["二甲", "二甲"], ["未知", "未知"]] },
     hsr: { title: "高铁站", api: "/api/hsr" },
   };
-  var poiUI = { school: { stage: "primary", city: "" }, hospital: { grade: "", city: "" }, hsr: { city: "" } };
+  var poiUI = {
+    school: { stage: "primary", city: "", q: "" },
+    hospital: { grade: "", city: "", q: "" },
+    hsr: { city: "", q: "" },
+  };
 
   function poiMenuHash(type) {
     return type === "school" ? "#/schools" : (type === "hospital" ? "#/hospitals" : "#/hsr");
@@ -1766,7 +1770,46 @@
     citySel.value = ui.city || "";
     citySel.addEventListener("change", function () { ui.city = citySel.value; renderPoiMenu(type); });
     bar.appendChild(citySel);
+
+    // 搜索框：按名称 / 地址包含匹配。输入防抖 300ms，回车立即触发，Esc 清空。
+    var searchInput = el("input", {
+      class: "poi-search",
+      type: "search",
+      placeholder: "搜索" + cfg.title + "名称或地址…",
+      "aria-label": "搜索" + cfg.title,
+    });
+    searchInput.value = ui.q || "";
+    var debounceTimer = null;
+    function applySearch() {
+      var v = searchInput.value.trim();
+      if (v === (ui.q || "")) return;
+      ui.q = v;
+      renderPoiMenu(type);
+    }
+    searchInput.addEventListener("input", function () {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(applySearch, 300);
+    });
+    searchInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { if (debounceTimer) clearTimeout(debounceTimer); applySearch(); }
+      else if (e.key === "Escape") { searchInput.value = ""; if (debounceTimer) clearTimeout(debounceTimer); applySearch(); }
+    });
+    bar.appendChild(searchInput);
     appEl.appendChild(bar);
+
+    // 有搜索词时给一行「清空」提示，避免用户不知道列表被过滤了
+    if (ui.q) {
+      var qbar = el("div", { class: "poi-query-hint" }, [
+        el("span", { text: "搜索：" + ui.q }),
+        el("button", {
+          class: "poi-tab", type: "button", text: "清空",
+        }),
+      ]);
+      qbar.querySelector("button").addEventListener("click", function () {
+        ui.q = ""; renderPoiMenu(type);
+      });
+      appEl.appendChild(qbar);
+    }
 
     var host = el("div", { class: "poi-list" });
     appEl.appendChild(host);
@@ -1776,6 +1819,7 @@
     if (ui.city) params.city = ui.city;
     if (cfg.stages && ui.stage) params.stage = ui.stage;
     if (cfg.grades && ui.grade) params.grade = ui.grade;
+    if (ui.q) params.q = ui.q;
 
     getJSON(cfg.api + buildQuery(params)).then(function (data) {
       host.innerHTML = "";

@@ -656,6 +656,16 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
 }
 .poi-bar .district-select:focus { outline: 2px solid var(--gold); outline-offset: 2px; }
 .poi-bar .district-select option { background: var(--surface); color: var(--ivory); }
+/* POI 搜索框：与筛选输入框同一视觉语言（胶囊、细边、focus 金色） */
+.poi-search {
+  flex: 1 1 220px; min-width: 180px; margin-left: auto;
+  background: rgba(245, 239, 227, 0.04); border: 1px solid var(--line-strong); border-radius: var(--r-pill);
+  color: var(--ivory); font-family: var(--sans); font-size: 14px; padding: 6px 14px;
+}
+.poi-search::placeholder { color: var(--ink-faint); opacity: 1; }
+.poi-search:focus { outline: 2px solid var(--gold); outline-offset: 2px; border-color: var(--gold); }
+.poi-query-hint { display: flex; align-items: center; gap: 10px; margin: -6px 0 12px; font-size: 13px; color: var(--ink-soft); }
+.poi-query-hint .poi-tab { padding: 2px 10px; font-size: 13px; }
 .poi-list { display: flex; flex-direction: column; }
 .poi-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 12px 8px; border-bottom: 1px dotted rgba(245, 239, 227, 0.10); color: var(--ivory); border-top: none; border-radius: var(--r-sm); }
 .poi-row:hover { background: rgba(245, 239, 227, 0.05); }
