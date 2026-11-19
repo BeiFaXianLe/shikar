@@ -90,15 +90,15 @@
 
   /** 温度→颜色（0 蓝 … 100 红）。 */
   function tempColor(temp) {
-    if (temp === null || temp === undefined || isNaN(Number(temp))) return "#34536b";
+    if (temp === null || temp === undefined || isNaN(Number(temp))) return "#8fb4cf";
     var t = Math.max(0, Math.min(100, Number(temp))) / 100;
-    // 靛蓝(冷) → 青灰 → 沙 → 赭 → 朱砂(热)，贴合纸面印刷的年鉴色调。
+    // 冷蓝 → 青绿 → 沙 → 哑金 → 珊瑚，深炭蓝底上可读的温度色阶。
     var stops = [
-      [52, 83, 107],    // 0    靛蓝 #34536b
-      [74, 110, 102],   // 0.35 青灰 #4a6e66
-      [150, 146, 118],  // 0.65 沙   #969276
-      [178, 120, 58],   // 0.82 赭   #b2783a
-      [178, 58, 43],    // 1    朱砂 #b23a2b
+      [143, 180, 207],  // 0    冷蓝 #8fb4cf
+      [111, 174, 154],  // 0.35 青绿 #6fae9a
+      [201, 194, 173],  // 0.65 沙   #c9c2ad
+      [210, 170, 109],  // 0.82 哑金 #d2aa6d
+      [224, 112, 90],   // 1    珊瑚 #e0705a
     ];
     var pos = [0, 0.35, 0.65, 0.82, 1];
     var i = 0;
@@ -191,7 +191,7 @@
       svgEl("path", {
         d: arcPath(cx, cy, r, 180, 0),
         fill: "none",
-        stroke: "#cfc9b9",
+        stroke: "rgba(245,239,227,0.14)",
         "stroke-width": 12,
         "stroke-linecap": "round",
       })
@@ -225,18 +225,18 @@
 
     // 刻度端点标注 0 / 100
     var zeroT = svgEl("text", {
-      x: 12, y: H - 2, fill: "#6a756d", "font-size": "10", "text-anchor": "middle",
+      x: 12, y: H - 2, fill: "#8f8b83", "font-size": "10", "text-anchor": "middle",
     });
     zeroT.textContent = "0";
     svg.appendChild(zeroT);
     var hundredT = svgEl("text", {
-      x: W - 12, y: H - 2, fill: "#6a756d", "font-size": "10", "text-anchor": "middle",
+      x: W - 12, y: H - 2, fill: "#8f8b83", "font-size": "10", "text-anchor": "middle",
     });
     hundredT.textContent = "100";
     svg.appendChild(hundredT);
     if (!hasTemp) {
       var nt = svgEl("text", {
-        x: cx, y: cy - 14, fill: "#6a756d", "font-size": "13", "text-anchor": "middle",
+        x: cx, y: cy - 14, fill: "#8f8b83", "font-size": "13", "text-anchor": "middle",
       });
       nt.textContent = "无数据";
       svg.appendChild(nt);
@@ -250,8 +250,8 @@
   function lineChart(points, opts) {
     // points: [{week, value}]，value 可能为 null
     opts = opts || {};
-    var W = 760, H = 240;
-    var padL = 46, padR = 18, padT = 18, padB = 34;
+    var W = 760, H = 320;
+    var padL = 46, padR = 18, padT = 20, padB = 34;
     var plotW = W - padL - padR;
     var plotH = H - padT - padB;
 
@@ -263,7 +263,7 @@
 
     if (valid.length === 0) {
       var emptyT = svgEl("text", {
-        x: W / 2, y: H / 2, fill: "#6a756d", "font-size": "15", "text-anchor": "middle",
+        x: W / 2, y: H / 2, fill: "#8f8b83", "font-size": "15", "text-anchor": "middle",
       });
       emptyT.textContent = "暂无数据";
       svg.appendChild(emptyT);
@@ -290,7 +290,7 @@
       return padT + (1 - (v - minV) / range) * plotH;
     }
 
-    var color = opts.color || "#34536b";
+    var color = opts.color || "#8fb4cf";
 
     // 网格线与 y 轴刻度（3 条）
     var ticks = 3;
@@ -300,11 +300,11 @@
       svg.appendChild(
         svgEl("line", {
           x1: padL, y1: yy, x2: W - padR, y2: yy,
-          stroke: "#d8d2c3", "stroke-width": 1,
+          stroke: "rgba(245,239,227,0.12)", "stroke-width": 1,
         })
       );
       var lab = svgEl("text", {
-        x: padL - 8, y: yy + 4, fill: "#6a756d", "font-size": "11", "text-anchor": "end",
+        x: padL - 8, y: yy + 4, fill: "#8f8b83", "font-size": "11", "text-anchor": "end",
       });
       lab.textContent = fmtNum(val, opts.decimals === undefined ? 1 : opts.decimals);
       svg.appendChild(lab);
@@ -375,7 +375,7 @@
       var p = points[i];
       if (!p) return;
       var xt = svgEl("text", {
-        x: x(i), y: H - 12, fill: "#6a756d", "font-size": "11", "text-anchor": "middle",
+        x: x(i), y: H - 12, fill: "#8f8b83", "font-size": "11", "text-anchor": "middle",
       });
       xt.textContent = shortWeek(p.week);
       svg.appendChild(xt);
@@ -414,18 +414,24 @@
         var cities = (data && data.cities) || [];
         appEl.innerHTML = "";
 
-        var head = el("div", { class: "page-head" }, [
-          el("h1", { text: "市场温度总览" }),
-          el("div", { class: "page-head-aside" }, [
-            el("span", {
-              class: "sub",
-              text: data && data.week ? "数据周 " + data.week : "",
+        var head = el("section", { class: "hero" }, [
+          el("div", { class: "hero-copy" }, [
+            el("div", { class: "hero-kicker", text: "SHIKAR · MARKET OBSERVATORY" }),
+            el("h1", { text: "市场温度总览" }),
+            el("p", {
+              class: "hero-sub",
+              text:
+                (data && data.week ? "数据周 " + data.week + " · " : "") +
+                "京津小区价格、温度与阶段信号，每周一次快照。",
             }),
-            el("a", {
-              class: "catalog-entry",
-              href: "#/catalog",
-              text: "浏览小区目录 →",
-            }),
+            el("div", { class: "hero-actions" }, [
+              el("a", { class: "hero-cta primary", href: "#/catalog", text: "浏览小区目录 →" }),
+              el("a", { class: "hero-cta", href: "#/commute", text: "双点通勤" }),
+            ]),
+          ]),
+          el("div", { class: "hero-deco", "aria-hidden": "true" }, [
+            el("div", { class: "hero-ring" }),
+            el("div", { class: "hero-line" }),
           ]),
         ]);
         appEl.appendChild(head);
@@ -1646,15 +1652,15 @@
     }
 
     if (tempHas) {
-      section.appendChild(el("h2", { class: "sub-title", text: "温度走势", style: "font-size:13px;color:#6a756d;margin:6px 0 6px" }));
+      section.appendChild(el("h2", { class: "sub-title", text: "温度走势", style: "font-size:13px;color:#8f8b83;margin:6px 0 6px" }));
       section.appendChild(
-        el("div", { class: "chart" }, [lineChart(tempPoints, { color: "#b23a2b", decimals: 1 })])
+        el("div", { class: "chart" }, [lineChart(tempPoints, { color: "#e0705a", decimals: 1 })])
       );
     }
     if (priceHas) {
-      section.appendChild(el("h2", { class: "sub-title", text: "价格走势（元/㎡）", style: "font-size:13px;color:#6a756d;margin:18px 0 6px" }));
+      section.appendChild(el("h2", { class: "sub-title", text: "价格走势（元/㎡）", style: "font-size:13px;color:#8f8b83;margin:18px 0 6px" }));
       section.appendChild(
-        el("div", { class: "chart" }, [lineChart(pricePoints, { color: "#34536b", decimals: 0 })])
+        el("div", { class: "chart" }, [lineChart(pricePoints, { color: "#8fb4cf", decimals: 0 })])
       );
     }
     return section;
