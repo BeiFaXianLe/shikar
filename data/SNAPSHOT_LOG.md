@@ -10,6 +10,17 @@
 
 ## 维护备注
 
+- **2026-11-19**：修复「首页空白 / 数据不一致」根因。`build_db.py` 仅对极少数（2026-W46 且历史充足）
+  小区计算 temperature，`ingest_history.py` 明确不计算温度/阶段（写 NULL），导致
+  `xiaoqu_metric_weekly.temperature` 大面积 NULL（实测 22096 行中 0 行有值），
+  首页 `/api/overview` 聚合因此为空、页面空白。
+  处置：新增 `scripts/recompute_metrics.py`（封装 `shikar.pipeline.recompute`，全量回填
+  mom4/absorb/temperature/stage，不改动 POI/地铁表，幂等可重跑），并将它**加入 `deploy/refresh.sh`
+  标准流程**（`ingest_history.py` 之后、重启之前）。本次已对生产库执行一次，`temperature` 22096/22096 全部回填。
+  **后续每周刷新/重建库后必须跑 recompute，否则首页会再次空白。**
+  说明：当前数据源缺 vol30/bargain/heat，温度分项多为中性 50，导致温度区分度偏低
+  （min/max/avg≈50/66/50）；这是数据源限制，补数需抓取且受限流影响，暂不处理。
+
 - **2026-11-16**：`scripts/build_db.py` 会先删除 `data/shikar.db` 再重建，但只重建 `xiaoqu` / `xiaoqu_metric_weekly`，
   不重建 POI 与地铁关系表（POI 需重新调用百度 Places API，配额有限）。本周重建前已备份 `shikar.db`，
   重建后按原 schema 还原 `poi` / `community_poi` / `subway_*` / `community_subway*` / `commute_cache`，

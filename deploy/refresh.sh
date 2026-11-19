@@ -47,6 +47,9 @@ if python3 scripts/build_db.py; then
   # 这一步把 fang_preview_all.csv 的历史成交灌进库。CSV 已在上方备份，
   # 所以即使库被重建，历史数据也能从这个 CSV 完整恢复。
   python3 scripts/ingest_history.py --csv data/fang_preview_all.csv --db data/shikar.db || echo "ingest history skipped/failed"
+  # 关键：build_db/ingest_history 都不算温度，必须全量重算派生指标，
+  # 否则 xiaoqu_metric_weekly.temperature 大面积 NULL，首页 /api/overview 聚合为空。
+  python3 scripts/recompute_metrics.py --db data/shikar.db || echo "WARN: recompute 指标失败（首页可能空白）"
   # 重建成功后刷一次备份，保证「备份 = 当前库 + 当前 CSV」
   python3 scripts/backup_critical.py backup --keep 12 || echo "WARN: 关键数据备份失败（继续）"
   # 推送到私有 GitHub 仓库做异地容灾（失败不阻塞刷新）
