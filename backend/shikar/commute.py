@@ -40,6 +40,8 @@ OSRM_TIMEOUT = 30
 DEFAULT_MAX_REQUESTS = 8
 #: 公交（百度，按次计费）单次最多计算的 OD 数（更严格，控制成本）。
 DEFAULT_MAX_TRANSIT_OD = 40
+#: 公交连续失败多少条且零成功时判定上游整体不可用（止损，不再烧配额）。
+_TRANSIT_FAIL_FAST = 3
 
 
 class CommuteError(RuntimeError):
@@ -56,6 +58,19 @@ class CommuteError(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.partial = partial or {}
+
+
+def _classify_upstream(exc: BaseException | None) -> str:
+    """把上游异常归为 ``timeout`` 或 ``upstream``（百度客户端不区分）。"""
+    if exc is None:
+        return "upstream"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    reason = getattr(exc, "reason", None)
+    text = f"{reason if reason is not None else exc}".lower()
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    return "upstream"
 
 
 def _get_json(url: str, timeout: int = OSRM_TIMEOUT) -> dict:
@@ -188,7 +203,7 @@ def commute_for(
             cached[row["community_id"]] = (row["t_a"], row["t_b"])
     missing = [c for c in candidates if c["id"] not in cached]
     stats = {"total": len(candidates), "cached": len(cached), "computed": 0,
-             "failed": 0, "truncated": False}
+             "failed": 0, "attempted": 0, "truncated": False, "partial": False}
 
     def save(cid, x, y):
         conn.execute(
@@ -236,19 +251,41 @@ def commute_for(
             return (lat, lng)
 
         pa, pb = bd(a), bd(b)
+        consecutive = 0
+        last_exc: BaseException | None = None
         for c in missing:
             pc = bd(c)
+            stats["attempted"] += 1
             try:
                 ta = baidu.transit(pc, pa)["duration_s"]  # 小区→A
                 tb = baidu.transit(pc, pb)["duration_s"]  # 小区→B
-            except Exception:
+            except Exception as exc:  # 百度客户端把 status!=0 抛 RuntimeError
+                last_exc = exc
                 stats["failed"] += 1
+                consecutive += 1
+                # 连续失败且一条都没成功：判定为上游整体不可用，尽早止损。
+                if stats["computed"] == 0 and consecutive >= _TRANSIT_FAIL_FAST:
+                    conn.rollback()
+                    raise CommuteError(
+                        _classify_upstream(exc),
+                        f"公交上游连续失败 {consecutive} 次：{exc}",
+                        partial=dict(stats),
+                    ) from exc
                 continue
             if ta is None or tb is None:
                 stats["failed"] += 1
+                consecutive += 1
                 continue
+            consecutive = 0
             save(c["id"], ta, tb)
         conn.commit()
+        if stats["computed"] == 0 and stats["attempted"] > 0:
+            raise CommuteError(
+                _classify_upstream(last_exc),
+                f"公交上游未返回可用结果（失败 {stats['failed']}/{stats['attempted']}）：{last_exc}",
+                partial=dict(stats),
+            )
+        stats["partial"] = stats["failed"] > 0
         if stats["truncated"]:
             exc = CommuteError(
                 "budget",

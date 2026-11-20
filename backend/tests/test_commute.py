@@ -236,6 +236,31 @@ def test_candidates_filter_coords_before_limit() -> None:
     assert picked1["with_coords"] == 2
 
 
+def test_candidates_pick_nearest_beyond_name_order() -> None:
+    """P1-3：距离排序必须作用于全部命中，不能只在前 200 条（名称序）里选。
+
+    构造 250 个命中：200 个远点名称排在前面，50 个近点名称排在后面。
+    旧实现先按名称序 LIMIT 200 再排序，近点永远进不了候选。
+    """
+    conn = _conn()
+    far = [(f"A{i:03d}", f"A{i:03d}", 120.0 + i * 0.01, 45.0) for i in range(200)]
+    near = [(f"Z{i:03d}", f"Z{i:03d}", 116.45 + i * 1e-4, 39.93 + i * 1e-4) for i in range(50)]
+    for xid, name, lng, lat in far + near:
+        upsert_xiaoqu(conn, {
+            "id": xid, "city": "北京", "district": "朝阳", "plate": "P",
+            "name": name, "alias": None, "lng": lng, "lat": lat,
+            "build_year": None, "households": None,
+        })
+    a = {"name": "A", "lat": 39.93, "lng": 116.45}
+    b = {"name": "B", "lat": 39.93, "lng": 116.45}
+    picked = catalog.select_commute_candidates(conn, a, b, city="北京", max_candidates=10)
+    ids = [it["id"] for it in picked["items"]]
+    assert picked["total_matched"] == 250
+    assert picked["with_coords"] == 250
+    assert picked["truncated"] is True
+    assert all(i.startswith("Z") for i in ids), f"最近的候选被名称序截断：{ids}"
+
+
 # --------------------------------------------------------------------------- #
 # API 层：错误映射与锁隔离
 # --------------------------------------------------------------------------- #
@@ -407,3 +432,41 @@ def test_concurrent_transit_commute_no_500(monkeypatch, live_server) -> None:
     codes = sorted(code for code, _ in results.values())
     errors = [body.get("error") for code, body in results.values() if code != 200]
     assert codes == [200] * 6, f"并发返回码 {codes}，错误 {errors}"
+
+
+# --------------------------------------------------------------------------- #
+# P1-2 公交错误分类：上游整体不可用 vs 个别候选算不出
+# --------------------------------------------------------------------------- #
+def test_transit_upstream_all_fail_returns_5xx(monkeypatch, live_server) -> None:
+    """公交上游全部失败必须给 5xx，不能混成 200 + 空结果（原 P1-5 未闭合点）。"""
+    _fake_places(monkeypatch)
+
+    def boom(src, dst):
+        raise RuntimeError("百度接口错误 status=302 msg=配额不足")
+
+    monkeypatch.setattr(commute.baidu, "transit", boom)
+    status, body = _get(live_server, "/api/commute?fromA=A&fromB=B&mode=transit&city=北京")
+    assert status == 502
+    assert body["error_type"] == "upstream"
+    assert body["stats"]["computed"] == 0
+    assert body["items"] == []
+
+
+def test_transit_partial_failure_returns_200_with_partial(monkeypatch, live_server) -> None:
+    """个别候选算不出时仍 200，但必须带 failed 统计与 partial 标记。"""
+    _fake_places(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 第一个候选的第一次 OD 调用失败
+            raise RuntimeError("百度接口错误 status=302")
+        return {"duration_s": 600.0}
+
+    monkeypatch.setattr(commute.baidu, "transit", flaky)
+    status, body = _get(live_server, "/api/commute?fromA=A&fromB=B&mode=transit&city=北京")
+    assert status == 200
+    assert body["stats"]["failed"] == 1
+    assert body["partial"] is True
+    assert len(body["items"]) == 1
+    assert "error" not in body

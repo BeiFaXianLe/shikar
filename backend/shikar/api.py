@@ -317,6 +317,8 @@ def _handle_commute(conn: sqlite3.Connection, qs: dict[str, list[str]]) -> tuple
         "matched": picked["total_matched"],
         "with_coords": picked["with_coords"],
         "truncated": picked["truncated"],
+        # 部分成功：有候选算不出来但整体仍可用（P1-2），与 truncated 分开口径。
+        "partial": bool(stats.get("failed")),
         "stats": stats,
     }
     if err is not None:
