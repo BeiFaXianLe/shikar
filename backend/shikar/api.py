@@ -46,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import catalog, commute, overview, storage, subway
+from . import baidu, catalog, commute, overview, storage, subway
 
 __all__ = ["create_server", "make_handler"]
 
@@ -266,12 +266,42 @@ def _route(
         district = _first(qs, "district")
         return 200, storage.list_xiaoqu(conn, city=city, district=district)
 
+    # /api/suggest  （地点模糊搜索：百度 suggestion 联想，供通勤页下拉提示）
+    if path == "/api/suggest":
+        q = _first(qs, "q")
+        if not q or not q.strip():
+            return 200, {"items": []}
+        region = _first(qs, "city") or "北京"
+        limit = _first_int(qs, "limit") or 8
+        limit = max(1, min(20, limit))
+        try:
+            raw = baidu.suggestion(q.strip(), region=region)
+        except Exception as exc:  # 百度不可用不应打挂下拉，返回明确错误
+            return 200, {"items": [], "error": f"联想服务不可用：{exc}"}
+        items = []
+        for r in raw[:limit]:
+            city = (r.get("city") or "").strip()
+            district = (r.get("district") or "").strip()
+            name = r.get("name") or q
+            display = f"{name}-{city}" if city else name
+            items.append({
+                "name": name,
+                "city": city,
+                "district": district,
+                "lat": r.get("lat"),
+                "lng": r.get("lng"),
+                "display": display,
+            })
+        return 200, {"items": items}
+
     # /api/commute  （双点加权通勤：OSRM 驾车 + 缓存）
     if path == "/api/commute":
         from_a = _first(qs, "fromA")
         from_b = _first(qs, "fromB")
         mode = _first(qs, "mode") or "driving"
-        if not from_a or not from_b:
+        has_coord_a = _first(qs, "latA") is not None and _first(qs, "lngA") is not None
+        has_coord_b = _first(qs, "latB") is not None and _first(qs, "lngB") is not None
+        if (not from_a and not has_coord_a) or (not from_b and not has_coord_b):
             return 400, {"error": "需要 fromA 与 fromB 两个地点"}
         if mode not in ("driving", "transit"):
             return 400, {"error": "mode 仅支持 driving / transit"}
@@ -286,10 +316,28 @@ def _route(
         limit = _first_int(qs, "limit") or 20
         limit = max(1, min(200, limit))
         city = _first(qs, "city")
-        a = commute.resolve_place(from_a, city)
-        b = commute.resolve_place(from_b, city)
+
+        def _place(side: str) -> Optional[dict]:
+            """优先用前端从下拉选中的坐标（BD09），否则回退到百度 suggestion 解析。"""
+            text = _first(qs, "from" + side)
+            lat = _first(qs, "lat" + side)
+            lng = _first(qs, "lng" + side)
+            if lat is not None and lng is not None:
+                try:
+                    blat, blng = float(lat), float(lng)
+                except (TypeError, ValueError):
+                    return None
+                wlng, wlat = baidu.bd09_to_wgs84(blng, blat)
+                return {"name": text or "选中地点", "lat": wlat, "lng": wlng}
+            if not text:
+                return None
+            side_city = _first(qs, "city" + side) or city
+            return commute.resolve_place(text, side_city)
+
+        a = _place("A")
+        b = _place("B")
         if not a or not b:
-            return 400, {"error": "无法解析地点，请换个更具体的名称"}
+            return 400, {"error": "无法解析地点，请从下拉中选择或换个更具体的名称"}
         try:
             res = catalog.query_catalog(
                 conn, city=city, district=_first(qs, "district"), page=1, page_size=200,

@@ -690,6 +690,24 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
 .cm-bar .fd-range-out { display: block; font-family: var(--mono); font-size: 12px; color: var(--gold); margin-top: 4px; }
 @media (max-width: 860px) { .cm-bar { grid-template-columns: 1fr 1fr; } }
 
+/* 地点模糊搜索组合框（输入联想 + 「地点-城市」下拉） */
+.cm-field { position: relative; min-width: 0; }
+.cm-combo { position: relative; }
+.cm-combo-input { width: 100%; }
+.cm-combo-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 40;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: var(--r-card); box-shadow: var(--shadow-card);
+  max-height: 264px; overflow-y: auto;
+}
+.cm-combo-item {
+  padding: 8px 12px; font-size: 13.5px; color: var(--ivory);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cm-combo-item:hover, .cm-combo-item.active {
+  background: var(--gold); color: #101820;
+}
+
 /* ==========================================================================
    移动端 UI 优化（≤720px / ≤400px）
    目标：触控可用、无横向溢出、信息不截断、图表可读、尊重安全区与减少动效。

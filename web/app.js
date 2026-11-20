@@ -1875,6 +1875,82 @@
   // -------------------------------------------------------------------------
   // 双点加权通勤（OSRM 驾车，免费）
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // 地点模糊搜索组合框（输入联想 + 「地点-城市」下拉提示）
+  // -------------------------------------------------------------------------
+  function makePlaceCombo(id, label, initial) {
+    var input = el("input", {
+      type: "text", class: "ff-input cm-combo-input", id: id,
+      placeholder: label, autocomplete: "off",
+    });
+    input.value = initial || "";
+    var menu = el("div", { class: "cm-combo-menu", role: "listbox" });
+    menu.style.display = "none";
+    var wrapper = el("div", { class: "cm-combo" }, [input, menu]);
+
+    var state = { picked: null, items: [], active: -1, timer: null, seq: 0 };
+
+    function closeMenu() { menu.style.display = "none"; menu.innerHTML = ""; state.active = -1; }
+
+    function choose(it) {
+      state.picked = it;
+      input.value = it.name;
+      closeMenu();
+    }
+
+    function renderMenu() {
+      menu.innerHTML = "";
+      if (!state.items.length) { closeMenu(); return; }
+      state.items.forEach(function (it, i) {
+        var row = el("div", {
+          class: "cm-combo-item" + (i === state.active ? " active" : ""),
+          role: "option",
+          text: it.display,
+        });
+        row.addEventListener("mousedown", function (e) { e.preventDefault(); choose(it); });
+        menu.appendChild(row);
+      });
+      menu.style.display = "block";
+    }
+
+    function fetchSuggest(q) {
+      var my = ++state.seq;
+      getJSON("/api/suggest" + buildQuery({ q: q, city: "北京", limit: 8 }))
+        .then(function (data) {
+          if (my !== state.seq) return; // 丢弃过期响应
+          state.items = (data && data.items) || [];
+          state.active = state.items.length ? 0 : -1;
+          renderMenu();
+        })
+        .catch(function () { if (my === state.seq) { state.items = []; closeMenu(); } });
+    }
+
+    input.addEventListener("input", function () {
+      state.picked = null; // 手动改动后作废之前的选择
+      var q = input.value.trim();
+      if (state.timer) clearTimeout(state.timer);
+      if (!q) { state.items = []; closeMenu(); return; }
+      state.timer = setTimeout(function () { fetchSuggest(q); }, 260);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (menu.style.display === "none" || !state.items.length) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); state.active = (state.active + 1) % state.items.length; renderMenu(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); state.active = (state.active - 1 + state.items.length) % state.items.length; renderMenu(); }
+      else if (e.key === "Enter") { if (state.active >= 0) { e.preventDefault(); choose(state.items[state.active]); } }
+      else if (e.key === "Escape") { closeMenu(); }
+    });
+
+    input.addEventListener("blur", function () { setTimeout(closeMenu, 150); });
+
+    return {
+      wrapper: wrapper,
+      input: input,
+      value: function () { return input.value.trim(); },
+      picked: function () { return state.picked; },
+    };
+  }
+
   function renderCommutePage() {
     appEl.innerHTML = "";
     appEl.appendChild(el("div", { class: "page-head" }, [
@@ -1883,8 +1959,10 @@
         el("a", { class: "catalog-entry", href: "#/catalog", text: "← 返回找小区" }),
       ]),
     ]));
-    var aInput = el("input", { type: "text", class: "ff-input", id: "cm-a", value: "国贸", placeholder: "地点 A" });
-    var bInput = el("input", { type: "text", class: "ff-input", id: "cm-b", value: "中关村", placeholder: "地点 B" });
+    var aCombo = makePlaceCombo("cm-a", "地点 A", "国贸");
+    var bCombo = makePlaceCombo("cm-b", "地点 B", "中关村");
+    var aInput = aCombo.input;
+    var bInput = bCombo.input;
     var modeSel = el("select", { class: "ff-select", id: "cm-mode" }, [
       el("option", { value: "driving", text: "驾车" }),
       el("option", { value: "transit", text: "公交 / 地铁" }),
@@ -1898,8 +1976,8 @@
     var btn = el("button", { class: "btn", type: "button", text: "计算通勤" });
     var host = el("div", { class: "poi-list" });
     var bar = el("div", { class: "cm-bar" }, [
-      el("div", {}, [el("label", { text: "地点 A" }), aInput]),
-      el("div", {}, [el("label", { text: "地点 B" }), bInput]),
+      el("div", { class: "cm-field" }, [el("label", { text: "地点 A" }), aCombo.wrapper]),
+      el("div", { class: "cm-field" }, [el("label", { text: "地点 B" }), bCombo.wrapper]),
       el("div", {}, [el("label", { text: "方式" }), modeSel]),
       el("div", {}, [el("label", { text: "权重" }), wRange, wOut]),
       el("div", { class: "cm-actions" }, [btn]),
@@ -1910,7 +1988,15 @@
     btn.addEventListener("click", function () {
       host.innerHTML = "";
       host.appendChild(stateNode("loading", "计算中…（批量调用免费驾车路径）"));
-      var params = { fromA: aInput.value.trim(), fromB: bInput.value.trim(), mode: modeSel.value, w: Number(wRange.value) / 100, limit: 30 };
+      var params = {
+        fromA: aCombo.value(), fromB: bCombo.value(),
+        mode: modeSel.value, w: Number(wRange.value) / 100, limit: 30,
+      };
+      // 已从下拉选中地点时直接带坐标与城市，避免「中关村→银川」这类同名歧义。
+      var pa = aCombo.picked(), pb = bCombo.picked();
+      if (pa) { params.latA = pa.lat; params.lngA = pa.lng; if (pa.city) params.cityA = pa.city; }
+      if (pb) { params.latB = pb.lat; params.lngB = pb.lng; if (pb.city) params.cityB = pb.city; }
+      if (pa && pb && pa.city === pb.city) params.city = pa.city.replace(/市$/, "");
       getJSON("/api/commute" + buildQuery(params)).then(function (data) {
         host.innerHTML = "";
         var items = (data && data.items) || [];
