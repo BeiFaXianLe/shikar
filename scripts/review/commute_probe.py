@@ -19,6 +19,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -47,6 +48,17 @@ def _conn() -> sqlite3.Connection:
     c.execute("PRAGMA foreign_keys=ON")
     init_db(c)
     return c
+
+
+def _file_conn() -> tuple[sqlite3.Connection, str]:
+    """文件库：/api/commute 只有在文件库上才会启用请求级独立连接（与生产一致）。"""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    c = sqlite3.connect(path, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys=ON")
+    init_db(c)
+    return c, path
 
 
 def _seed(c: sqlite3.Connection, rows: list[tuple[str, str, float, float]]) -> None:
@@ -89,7 +101,7 @@ def _fake_place(conn, text, city=None):
 
 def sc_a_concurrency() -> None:
     """A. 6 个并发 /api/commute 是否全部 200（P1-1）。"""
-    c = _conn()
+    c, db_path = _file_conn()
     _seed(c, [(f"C{i}", f"小区{i}", 116.4 + i * 1e-3, 39.9 + i * 1e-3) for i in range(5)])
     commute.resolve_place = _fake_place
 
@@ -112,6 +124,8 @@ def sc_a_concurrency() -> None:
     [t.join(30) for t in threads]
     srv.shutdown()
     srv.server_close()
+    c.close()
+    os.unlink(db_path)
     codes = [v[0] for v in res.values()]
     errs = {v[1].get("error") for v in res.values() if isinstance(v[1], dict) and v[1].get("error")}
     verdict = "PASS" if codes.count(200) == 6 else "FAIL"
