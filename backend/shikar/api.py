@@ -213,6 +213,8 @@ _COMMUTE_ERROR_STATUS = {
     "upstream": 502,
     "timeout": 504,
     "budget": 429,
+    # 本地缓存写锁繁忙（短事务冲突）：让客户端重试，而不是裸 500。
+    "busy": 503,
 }
 
 

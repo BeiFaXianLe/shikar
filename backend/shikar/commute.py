@@ -188,6 +188,9 @@ def commute_for(
     错误分类（P1-5）：上游失败/超时以 ``kind`` 区分；已成功的候选放入 ``partial``，
     便于上层返回部分成功统计而非混成「成功空」。
 
+    写事务边界：上游计算全部只进内存缓冲，结束后**一次短事务**写入并提交——写事务
+    不跨网络调用；并发冷缓存下不会互等写锁。写冲突以 ``busy``（503）返回。
+
     :return: ``(cached, key, stats)``，``stats`` 含
         ``{"computed","cached","failed","truncated","total"}``。
     """
@@ -205,14 +208,31 @@ def commute_for(
     stats = {"total": len(candidates), "cached": len(cached), "computed": 0,
              "failed": 0, "attempted": 0, "truncated": False, "partial": False}
 
-    def save(cid, x, y):
-        conn.execute(
-            "INSERT INTO commute_cache(key,community_id,t_a,t_b,updated_at) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(key,community_id) DO UPDATE SET t_a=excluded.t_a,t_b=excluded.t_b,updated_at=excluded.updated_at",
-            (key, cid, x, y, _cache_ts(now)),
-        )
-        cached[cid] = (x, y)
+    pending: list[tuple[str, float, float]] = []
+
+    def buffer(cid: str, x: float, y: float) -> None:
+        """只进内存缓冲：写事务绝不跨网络调用（并发冷缓存写锁死修复）。"""
+        pending.append((cid, x, y))
         stats["computed"] += 1
+
+    def flush() -> None:
+        """一次短事务写入缓冲行，并把结果**合并**进 ``cached``（保留已有命中项）。"""
+        if not pending:
+            return
+        rows = [(key, cid, x, y, _cache_ts(now)) for cid, x, y in pending]
+        try:
+            conn.executemany(
+                "INSERT INTO commute_cache(key,community_id,t_a,t_b,updated_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(key,community_id) DO UPDATE SET t_a=excluded.t_a,t_b=excluded.t_b,updated_at=excluded.updated_at",
+                rows,
+            )
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            raise CommuteError("busy", f"缓存写入繁忙：{exc}", partial=dict(stats)) from exc
+        for cid, x, y in pending:
+            cached[cid] = (x, y)
+        pending.clear()
 
     if mode == "driving":
         # 以小区为起点，分别取到 A、B 的时长（方向：小区→A/B）。
@@ -221,18 +241,30 @@ def commute_for(
         if len(chunks) > max_requests:
             stats["truncated"] = True
             chunks = chunks[:max_requests]
-        for chunk in chunks:
-            # 每批把本批小区作为 sources，目的地固定为 A、B 两点。
-            t_a_by, t_b_by = _table_multi_source(
-                [(c["lat"], c["lng"]) for c in chunk], dests_ab
-            )
-            for c, ra, rb in zip(chunk, t_a_by, t_b_by):
-                if ra is None or rb is None:
-                    stats["failed"] += 1
-                    continue
-                save(c["id"], ra, rb)
+        try:
+            for chunk in chunks:
+                # 每批把本批小区作为 sources，目的地固定为 A、B 两点。
+                t_a_by, t_b_by = _table_multi_source(
+                    [(c["lat"], c["lng"]) for c in chunk], dests_ab
+                )
+                for c, ra, rb in zip(chunk, t_a_by, t_b_by):
+                    if ra is None or rb is None:
+                        stats["failed"] += 1
+                        continue
+                    buffer(c["id"], ra, rb)
+        except CommuteError as exc:
+            # 上游失败：先把已算出的批次落库（短事务），再抛原始错误；
+            # flush 自身失败不覆盖原错误。
+            try:
+                flush()
+            except CommuteError:
+                pass
+            stats["partial"] = stats["failed"] > 0
+            exc.partial = dict(stats)
+            exc._cached = dict(cached)
+            raise
+        flush()
         if stats["truncated"]:
-            conn.commit()
             exc = CommuteError(
                 "budget",
                 f"候选超过单次驾车预算（{max_requests} 批），已计算前 "
@@ -265,7 +297,6 @@ def commute_for(
                 consecutive += 1
                 # 连续失败且一条都没成功：判定为上游整体不可用，尽早止损。
                 if stats["computed"] == 0 and consecutive >= _TRANSIT_FAIL_FAST:
-                    conn.rollback()
                     raise CommuteError(
                         _classify_upstream(exc),
                         f"公交上游连续失败 {consecutive} 次：{exc}",
@@ -277,8 +308,8 @@ def commute_for(
                 consecutive += 1
                 continue
             consecutive = 0
-            save(c["id"], ta, tb)
-        conn.commit()
+            buffer(c["id"], ta, tb)
+        flush()
         if stats["computed"] == 0 and stats["attempted"] > 0:
             raise CommuteError(
                 _classify_upstream(last_exc),
@@ -295,7 +326,6 @@ def commute_for(
             exc._cached = dict(cached)
             raise exc
         return cached, key, stats
-    conn.commit()
     return cached, key, stats
 
 

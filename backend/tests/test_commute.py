@@ -286,10 +286,10 @@ def live_server(monkeypatch, tmp_path) -> Iterator[dict]:
         conn.close()
 
 
-def _get(server: dict, path: str) -> tuple[int, object]:
+def _get(server: dict, path: str, timeout: float = 5) -> tuple[int, object]:
     # 对路径里的非 ASCII（如中文城市名）做百分号编码。
     path = urllib.parse.quote(path, safe="/?=&;")
-    client = http.client.HTTPConnection(server["host"], server["port"], timeout=5)
+    client = http.client.HTTPConnection(server["host"], server["port"], timeout=timeout)
     try:
         client.request("GET", path)
         resp = client.getresponse()
@@ -470,3 +470,108 @@ def test_transit_partial_failure_returns_200_with_partial(monkeypatch, live_serv
     assert body["partial"] is True
     assert len(body["items"]) == 1
     assert "error" not in body
+
+
+# --------------------------------------------------------------------------- #
+# P1-1 余项：并发冷缓存写锁死（写事务不得跨网络调用）
+# --------------------------------------------------------------------------- #
+def _file_server(tmp_path, n_communities: int):
+    """文件库 + 真实 HTTP 服务：/api/commute 会走请求级独立连接。"""
+    db_path = str(tmp_path / "cold.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    init_db(conn)
+    for i in range(n_communities):
+        upsert_xiaoqu(conn, {
+            "id": f"C{i:03d}", "city": "北京", "district": "朝阳", "plate": "P",
+            "name": f"小区{i:03d}", "alias": None,
+            "lng": 116.40 + i * 1e-4, "lat": 39.90 + i * 1e-4,
+            "build_year": None, "households": None,
+        })
+    conn.commit()
+    server = create_server(conn, host="127.0.0.1", port=0)
+    host, port = server.server_address[0], server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return {"host": host, "port": port, "conn": conn, "db_path": db_path,
+            "server": server, "thread": thread}
+
+
+def _stop(env: dict) -> None:
+    env["server"].shutdown()
+    env["server"].server_close()
+    env["thread"].join(timeout=5)
+    env["conn"].close()
+
+
+def test_concurrent_cold_cache_slow_upstream_no_lock(monkeypatch, tmp_path) -> None:
+    """并发冷缓存 + 慢上游：写事务不得跨网络调用，否则 6 个请求互等写锁 500。
+
+    200 个候选 = 3 批（BATCH=80），假上游每批 1.0s：旧实现写事务横跨约 2s 网络，
+    并发尾部队列等待超过 busy_timeout=5000 → database is locked。
+    """
+    env = _file_server(tmp_path, 200)
+
+    def distinct_place(conn, text, city=None):
+        # 每个请求解析出不同坐标 → 缓存键不同 → 真正“冷缓存”并发写。
+        idx = int("".join(ch for ch in text if ch.isdigit()) or "0")
+        return {"name": text, "lat": 39.85 + idx * 0.002, "lng": 116.35 + idx * 0.002}
+
+    monkeypatch.setattr(commute, "resolve_place", distinct_place)
+
+    def slow_json(url, timeout=30):
+        time.sleep(1.0)
+        return {"code": "Ok",
+                "durations": [[600.0, 1200.0] for _ in range(_count_sources(url))]}
+
+    monkeypatch.setattr(commute, "_get_json", slow_json)
+    results: dict[int, tuple] = {}
+
+    def call(i: int) -> None:
+        results[i] = _get(
+            env, f"/api/commute?fromA=A{i}&fromB=B{i}&mode=driving&city=北京&limit=5",
+            timeout=60,
+        )
+
+    try:
+        threads = [threading.Thread(target=call, args=(i,)) for i in range(6)]
+        [t.start() for t in threads]
+        [t.join(60) for t in threads]
+    finally:
+        _stop(env)
+
+    codes = sorted(code for code, _ in results.values())
+    errors = [body.get("error") for code, body in results.values() if code != 200]
+    assert codes == [200] * 6, f"并发返回码 {codes}，错误 {errors}"
+    assert not any("database is locked" in str(e) for e in errors)
+
+
+def test_upstream_error_midway_keeps_computed_partial(monkeypatch, tmp_path) -> None:
+    """上游第 2 批失败：已算出的第 1 批必须落库并作为部分结果返回，不留悬挂事务。"""
+    env = _file_server(tmp_path, 200)
+    _fake_places(monkeypatch)
+    calls = {"n": 0}
+
+    def fail_second(url, timeout=30):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise commute.CommuteError("upstream", "OSRM 挂了")
+        return {"code": "Ok",
+                "durations": [[600.0, 1200.0] for _ in range(_count_sources(url))]}
+
+    monkeypatch.setattr(commute, "_get_json", fail_second)
+    try:
+        status, body = _get(env, "/api/commute?fromA=A&fromB=B&mode=driving&city=北京")
+        assert status == 502
+        assert body["stats"]["computed"] == commute.BATCH
+        assert len(body["items"]) == 20  # 默认 limit
+        # 已算出的批次确实提交了（用新连接看，排除未提交事务的假象）
+        other = sqlite3.connect(env["db_path"])
+        try:
+            n = other.execute("SELECT COUNT(*) FROM commute_cache").fetchone()[0]
+        finally:
+            other.close()
+        assert n == commute.BATCH
+    finally:
+        _stop(env)
