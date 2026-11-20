@@ -145,3 +145,4 @@
 - `ketchup` / `ketchup-video` / `make-bot-ui` / `control-ui` 等展示与 UI 控制类技能。
 - `setup-pstack` 写 rules 文件的机制。
 - 22 个 playbook 全量照搬：只保留上面 6 类映射，避免再造一套没人查的目录。
+
