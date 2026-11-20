@@ -508,7 +508,9 @@ def _route(
 
 
 def make_handler(
-    conn: sqlite3.Connection, web_root: Optional[str] = None
+    conn: sqlite3.Connection,
+    web_root: Optional[str] = None,
+    connect: Optional[Callable[[], sqlite3.Connection]] = None,
 ) -> type[BaseHTTPRequestHandler]:
     """构造绑定到给定连接（及可选静态根目录）的处理器子类。
 
@@ -519,8 +521,13 @@ def make_handler(
     是线程安全的（例如以 ``check_same_thread=False`` 创建）。为避免并发请求在同
     一连接上交叉执行，这里另加一把进程内的互斥锁串行化所有数据库访问。
 
+    ``/api/commute`` 例外：它会在处理期间发起慢速外部网络请求，不能持锁。给出
+    ``connect`` 时该路径改用**请求级独立连接**（打开→用完关闭），既不持锁，也不
+    与其它请求共用连接；``connect`` 为 ``None``（内存库）时退回共用连接加锁的旧行为。
+
     :param conn: 已打开的 SQLite 连接（须为线程安全连接）。
     :param web_root: 可选静态文件根目录；``None`` 时不提供静态服务。
+    :param connect: 可选连接工厂，供 ``/api/commute`` 打开请求级连接。
     :return: 可作为 ``RequestHandlerClass`` 使用的处理器类。
     """
     db_lock = threading.Lock()
@@ -587,15 +594,21 @@ def make_handler(
 
             锁边界（P1-4）：``/api/commute`` 会发起慢速外部网络请求，不能持有
             全 API 共用锁，否则会阻塞 ``/api/health`` 等即时接口。因此该路径在
-            锁外执行（其内部 DB 访问由独立短事务/连接处理）；其余接口只做本地
-            DB 读，继续在共用锁内串行，避免同一连接交叉执行。
+            锁外执行，并使用**请求级独立连接**（``connect``），避免与持锁线程共用
+            同一连接导致事务交叉；其余接口只做本地 DB 读，继续在共用锁内串行。
             """
             path = urlsplit(self.path).path
             if not path.startswith("/api/"):
                 self._serve_static(path)
                 return
             try:
-                if path == "/api/commute":
+                if path == "/api/commute" and connect is not None:
+                    req_conn = connect()
+                    try:
+                        status, obj = _route(req_conn, self.path)
+                    finally:
+                        req_conn.close()
+                elif path == "/api/commute":
                     status, obj = _route(conn, self.path)
                 else:
                     with db_lock:
@@ -620,11 +633,29 @@ def make_handler(
     return _Handler
 
 
+def _open_sqlite(path: str) -> sqlite3.Connection:
+    """打开一条请求级 SQLite 连接：单线程使用，PRAGMA 与主连接一致。"""
+    conn = sqlite3.connect(path, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _db_file(conn: sqlite3.Connection) -> Optional[str]:
+    """取主库文件路径；内存库返回 ``None``。"""
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row[1] == "main" and row[2]:
+            return str(row[2])
+    return None
+
+
 def create_server(
     conn: sqlite3.Connection,
     host: str = "127.0.0.1",
     port: int = 0,
     web_root: Optional[str] = None,
+    connect: Optional[Callable[[], sqlite3.Connection]] = None,
 ) -> ThreadingHTTPServer:
     """创建只读 HTTP 服务实例（未启动，需调用方 ``serve_forever`` / ``serve``）。
 
@@ -633,14 +664,26 @@ def create_server(
     创建，之后再 ``init_db`` 建表）。处理器内部另加互斥锁串行化数据库访问，因此
     即便多个请求并发也不会在同一连接上交叉执行。
 
+    ``/api/commute`` 在锁外执行（慢网络不能阻塞 ``/api/health``），它改用请求级
+    独立连接；``connect`` 未给出时按 ``conn`` 的库文件路径自动推导（内存库推导不出，
+    退回共用连接加锁的旧行为，仅测试会走到）。
+
     :param conn: 已打开的 SQLite 连接（须为线程安全连接），处理请求时只读使用。
     :param host: 绑定地址，默认 ``"127.0.0.1"``（仅回环，不回 ``0.0.0.0``）。
     :param port: 端口，默认 ``0`` 表示由系统分配空闲端口（测试友好）。
     :param web_root: 可选静态文件根目录；给出时提供静态文件服务，``None`` 时
         非 ``/api`` 路径返回 404 JSON（保持旧行为）。
+    :param connect: 可选连接工厂；``None`` 时按库文件路径自动推导。
     :return: 配置好处理器的 ``ThreadingHTTPServer``，其 ``server_address`` 反映
         实际绑定地址与端口。
     """
-    handler_cls: Callable[..., BaseHTTPRequestHandler] = make_handler(conn, web_root)
+    if connect is None:
+        db_file = _db_file(conn)
+        if db_file:
+            def _connect() -> sqlite3.Connection:
+                return _open_sqlite(db_file)
+
+            connect = _connect
+    handler_cls: Callable[..., BaseHTTPRequestHandler] = make_handler(conn, web_root, connect)
     server = ThreadingHTTPServer((host, port), handler_cls)
     return server

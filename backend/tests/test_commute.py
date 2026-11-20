@@ -240,8 +240,13 @@ def test_candidates_filter_coords_before_limit() -> None:
 # API 层：错误映射与锁隔离
 # --------------------------------------------------------------------------- #
 @pytest.fixture()
-def live_server(monkeypatch) -> Iterator[dict]:
-    conn = _conn()
+def live_server(monkeypatch, tmp_path) -> Iterator[dict]:
+    # 用文件库：create_server 才能为 /api/commute 派生请求级独立连接（与生产一致）。
+    db_path = str(tmp_path / "live.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    init_db(conn)
     _seed(conn)
     server = create_server(conn, host="127.0.0.1", port=0)
     host, port = server.server_address[0], server.server_address[1]
@@ -253,6 +258,7 @@ def live_server(monkeypatch) -> Iterator[dict]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        conn.close()
 
 
 def _get(server: dict, path: str) -> tuple[int, object]:
@@ -343,3 +349,61 @@ def test_slow_commute_does_not_block_health(monkeypatch, live_server) -> None:
     # health 必须在慢通勤（~1.2s）结束前快速返回。
     assert elapsed < 0.6, f"health 被阻塞 {elapsed:.2f}s"
     assert results["commute"][0] == 200
+
+
+def _brute_suggestion(text, region=None):
+    """同名不同文本也返回同一 BD09 点，避免测试依赖百度。"""
+    return [{"name": text, "lng": 116.40, "lat": 39.90}]
+
+
+def test_concurrent_commute_distinct_coords_no_500(monkeypatch, live_server) -> None:
+    """P1-1 回归：并发不同坐标对的驾车通勤不得因共用连接交叉执行而 500。"""
+    monkeypatch.setattr(commute.baidu, "suggestion", _brute_suggestion)
+
+    def slow_json(url, timeout=30):
+        time.sleep(0.25)  # 拉长窗口，让并发请求必然重叠
+        return {"code": "Ok", "durations": [[600.0, 1200.0] for _ in range(_count_sources(url))]}
+
+    monkeypatch.setattr(commute, "_get_json", slow_json)
+
+    results: dict[int, tuple] = {}
+
+    def call(i: int) -> None:
+        results[i] = _get(
+            live_server,
+            f"/api/commute?fromA=A{i}&fromB=B{i}&mode=driving&city=北京",
+        )
+
+    threads = [threading.Thread(target=call, args=(i,)) for i in range(6)]
+    [t.start() for t in threads]
+    [t.join(30) for t in threads]
+    codes = sorted(code for code, _ in results.values())
+    errors = [body.get("error") for code, body in results.values() if code != 200]
+    assert codes == [200] * 6, f"并发返回码 {codes}，错误 {errors}"
+    assert live_server["conn"].execute("SELECT COUNT(*) FROM commute_cache").fetchone()[0] > 0
+
+
+def test_concurrent_transit_commute_no_500(monkeypatch, live_server) -> None:
+    """P1-1 回归：并发公交通勤同样不得出现共享连接交叉（曾报 tuple index out of range）。"""
+    monkeypatch.setattr(commute.baidu, "suggestion", _brute_suggestion)
+
+    def slow_transit(src, dst):
+        time.sleep(0.05)
+        return {"duration_s": 600.0}
+
+    monkeypatch.setattr(commute.baidu, "transit", slow_transit)
+
+    results: dict[int, tuple] = {}
+
+    def call(i: int) -> None:
+        results[i] = _get(
+            live_server,
+            f"/api/commute?fromA=A{i}&fromB=B{i}&mode=transit&city=北京",
+        )
+
+    threads = [threading.Thread(target=call, args=(i,)) for i in range(6)]
+    [t.start() for t in threads]
+    [t.join(30) for t in threads]
+    codes = sorted(code for code, _ in results.values())
+    errors = [body.get("error") for code, body in results.values() if code != 200]
+    assert codes == [200] * 6, f"并发返回码 {codes}，错误 {errors}"
