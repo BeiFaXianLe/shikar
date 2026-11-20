@@ -164,7 +164,8 @@ def suggestion(query: str, region: str = "全国") -> list[dict]:
     for r in data.get("result") or []:
         loc = r.get("location") or {}
         out.append({"name": r.get("name"), "lat": loc.get("lat"), "lng": loc.get("lng"),
-                    "address": r.get("address"), "district": r.get("district")})
+                    "address": r.get("address"), "district": r.get("district"),
+                    "city": r.get("city")})
     return out
 
 
