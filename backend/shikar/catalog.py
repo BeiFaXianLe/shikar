@@ -36,7 +36,7 @@ from typing import Optional
 
 from . import subway
 
-__all__ = ["query_catalog"]
+__all__ = ["query_catalog", "select_commute_candidates"]
 
 #: ``page_size`` 默认值。
 _DEFAULT_PAGE_SIZE = 50
@@ -106,6 +106,7 @@ def query_catalog(
     hospital_max: Optional[float] = None,
     hsr_max: Optional[float] = None,
     sort: str = "default",
+    center: Optional[tuple[float, float]] = None,
 ) -> dict:
     """按城市 / 区 / 关键词 / 价格 / 地铁条件过滤并分页查询小区目录。
 
@@ -133,7 +134,8 @@ def query_catalog(
     :param station: 指定站点 id；给出时仅按「距站」口径。
     :param subway_mode: ``"station"``（距站）或 ``"line"``（距线路走向）。
     :param subway_max: 地铁距离阈值（km）；给出即启用地铁筛选。
-    :param sort: 排序方式，见模块文档。
+    :param sort: 排序方式，见模块文档；``"distance_center"`` 需同时给出 ``center``。
+    :param center: 距离排序的参照点 ``(lng, lat)``；仅 ``sort="distance_center"`` 使用。
     :return: 分页结果字典。
     :raises ValueError: 价格/地铁阈值非法、口径或排序不支持、需要地铁筛选但
         未导入地铁数据、线路/站点非法。
@@ -150,8 +152,13 @@ def query_catalog(
         raise ValueError(f"地铁距离必须大于 0 且不超过 {_MAX_SUBWAY_KM:g} km")
     if subway_mode not in ("station", "line"):
         raise ValueError("距离口径只能为 station/line")
-    if sort not in ("default", "price_asc", "price_desc", "subway_distance"):
+    if sort not in ("default", "price_asc", "price_desc", "subway_distance", "distance_center"):
         raise ValueError("排序参数不支持")
+    if sort == "distance_center":
+        if center is None:
+            raise ValueError("距离排序需要 center")
+        if not (math.isfinite(center[0]) and math.isfinite(center[1])):
+            raise ValueError("center 必须是有限坐标")
 
     page_n = _clamp_page(page)
     size_n = _clamp_page_size(page_size)
@@ -244,13 +251,24 @@ def query_catalog(
                 distance_params = list(lines)
             distance_sql += ")"
 
+    # 距离排序（P1-3）：无坐标小区不参与，也不占 LIMIT 名额。
+    if sort == "distance_center":
+        where_sql += " AND x.lng IS NOT NULL AND x.lat IS NOT NULL"
+
     stable = "x.city ASC, x.district ASC, x.name ASC, x.id ASC"
+    order_params: list = []
     if sort == "price_asc":
         order = "m.price IS NULL ASC, m.price ASC, " + stable
     elif sort == "price_desc":
         order = "m.price IS NULL ASC, m.price DESC, " + stable
     elif sort == "subway_distance":
         order = "sort_distance IS NULL ASC, sort_distance ASC, " + stable
+    elif sort == "distance_center":
+        # 平方等距近似：与真实球面距离同序，且只用四则运算（不依赖 SQLite 数学函数）。
+        mid_lng, mid_lat = float(center[0]), float(center[1])
+        cos2 = math.cos(math.radians(mid_lat)) ** 2
+        order = "((x.lng - ?)*(x.lng - ?)*? + (x.lat - ?)*(x.lat - ?)) ASC, " + stable
+        order_params = [mid_lng, mid_lng, cos2, mid_lat, mid_lat]
     else:
         order = stable
 
@@ -262,11 +280,12 @@ def query_catalog(
     total = int(total_row["n"]) if total_row is not None else 0
 
     offset = (page_n - 1) * size_n
+    extra_cols = ",x.lng AS lng,x.lat AS lat" if sort == "distance_center" else ""
     rows = conn.execute(
         f"SELECT x.id,x.city,x.district,x.plate,x.name,m.week,m.price,m.mom4,"
-        f"{distance_sql} AS sort_distance {from_sql} "
+        f"{distance_sql} AS sort_distance{extra_cols} {from_sql} "
         f"WHERE 1 = 1 {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
-        distance_params + metric_join_params + params + [size_n, offset],
+        distance_params + metric_join_params + params + order_params + [size_n, offset],
     ).fetchall()
 
     row_ids = [r["id"] for r in rows]
@@ -289,8 +308,7 @@ def query_catalog(
             (row["id"],),
         ).fetchone()
         data_points = int(dp_row["n"]) if dp_row is not None else 0
-        items.append(
-            {
+        item = {
                 "id": row["id"],
                 "city": row["city"],
                 "district": row["district"],
@@ -309,8 +327,11 @@ def query_catalog(
                     else ("房天下" if str(row["week"]).startswith("2026-") else "未知")
                 ),
                 "features": {"subway": features.get(row["id"])},
-            }
-        )
+        }
+        if sort == "distance_center":
+            item["lng"] = row["lng"]
+            item["lat"] = row["lat"]
+        items.append(item)
 
     # 为每条结果补「最近学校/医院/高铁」摘要（用于结果次行展示）。
     for it in items:
@@ -335,4 +356,82 @@ def query_catalog(
         "price_periods": price_periods,
         "price_week": price_week if has_price_week else None,
         "items": items,
+    }
+
+
+def _haversine_km(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
+    """两点球面距离（km），用于候选的空间排序。"""
+    r = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def select_commute_candidates(
+    conn: sqlite3.Connection,
+    a: dict,
+    b: dict,
+    *,
+    city: Optional[str] = None,
+    district: Optional[str] = None,
+    stage: Optional[str] = None,
+    school_max: Optional[float] = None,
+    grade: Optional[str] = None,
+    hospital_max: Optional[float] = None,
+    hsr_max: Optional[float] = None,
+    max_candidates: Optional[int] = None,
+) -> dict:
+    """为通勤计算挑选候选小区：**距离排序作用于全部命中，再取有限候选**。
+
+    修复 P1-3：旧实现先按名称序截前 N 条、再在其中过滤坐标与排序，空间规则
+    只作用在名称序的前 N 条上；本函数改为：
+
+    1. 以原有过滤条件取**全部命中**的计数（``total_matched``）；
+    2. 同一批条件 + 坐标非空，按到 A/B 中点的距离在 SQL 里排序并取前 N 条
+       （``sort="distance_center"``），无坐标小区既不参与也不占名额；
+    3. ``with_coords`` 取该查询的命中总数，``truncated`` 表示是否因 N 截断；
+    4. 取回的 ≤N 条再按真实球面距离排一次，保持输出顺序语义。
+
+    :return: ``{"items": [...], "total_matched", "with_coords", "truncated"}``，
+        其中 ``items`` 每项含 ``id/name/city/district/plate/latest_price/lng/lat``；
+        ``truncated`` 表示是否因 ``max_candidates`` 截断。
+    """
+    filters = dict(
+        city=city, district=district, stage=stage, school_max=school_max,
+        grade=grade, hospital_max=hospital_max, hsr_max=hsr_max,
+    )
+    base = query_catalog(conn, page=1, page_size=1, **filters)
+    total_matched = base["total"]
+    if total_matched == 0:
+        return {"items": [], "total_matched": 0, "with_coords": 0, "truncated": False}
+
+    mid_lng = (a["lng"] + b["lng"]) / 2.0
+    mid_lat = (a["lat"] + b["lat"]) / 2.0
+    limit = _MAX_PAGE_SIZE if max_candidates is None else min(max_candidates, _MAX_PAGE_SIZE)
+    near = query_catalog(
+        conn, page=1, page_size=limit, sort="distance_center",
+        center=(mid_lng, mid_lat), **filters,
+    )
+    with_coords = near["total"]
+    valid = [
+        {
+            "id": it["id"], "name": it.get("name"), "city": it.get("city"),
+            "district": it.get("district"), "plate": it.get("plate"),
+            "latest_price": it.get("latest_price"),
+            "lng": it["lng"], "lat": it["lat"],
+            "_dist": _haversine_km(mid_lng, mid_lat, it["lng"], it["lat"]),
+        }
+        for it in near["items"]
+    ]
+    valid.sort(key=lambda x: (x["_dist"], x["id"]))
+    truncated = with_coords > len(valid)
+    for v in valid:
+        v.pop("_dist", None)
+    return {
+        "items": valid,
+        "total_matched": total_matched,
+        "with_coords": with_coords,
+        "truncated": truncated,
     }

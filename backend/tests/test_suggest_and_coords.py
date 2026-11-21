@@ -74,15 +74,17 @@ def test_commute_accepts_selected_coords_skipping_suggestion(monkeypatch):
     # 记录捕获到的 origin，验证坐标已被转成 WGS84（不再是 BD09 原值）
     captured = {}
 
-    def fake_commute_for(conn, a, b, candidates, mode="driving"):
+    def fake_commute_for(conn, a, b, candidates, mode="driving", **kw):
         captured["a"] = a
         captured["b"] = b
-        return {}, "key"
+        return {}, "key", {"total": len(candidates), "computed": 0, "cached": 0,
+                           "failed": 0, "truncated": False}
 
     monkeypatch.setattr(api.commute, "commute_for", fake_commute_for)
-    # 候选小区查询也需绕过（内存库无 xiaoqu 表），返回空候选即可验证解析阶段
-    monkeypatch.setattr(api.catalog, "query_catalog",
-                        lambda *a, **k: {"items": []})
+    # 候选选取也需绕过（内存库无 xiaoqu 表），返回空候选即可验证解析阶段
+    monkeypatch.setattr(api.catalog, "select_commute_candidates", lambda *a, **k: {
+        "items": [], "total_matched": 0, "with_coords": 0, "truncated": False,
+    })
     # 没有候选小区时也应在解析阶段就走通
     q = ("/api/commute?fromA=%E4%B8%AD%E5%85%B3%E6%9D%91&fromB=%E5%9B%BD%E8%B4%B8"
          "&latA=39.989956&lngA=116.323066&latB=39.91&lngB=116.46&mode=driving&w=0.5")
