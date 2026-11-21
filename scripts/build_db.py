@@ -139,6 +139,17 @@ def restore_poi(conn, poi_rows, rel_rows, extra_rows=None):
             print(f"  {t} 跳过 {len(rows) - len(alive)} 行（关联小区已不在库中）")
     return n_poi, n_rel, extra_counts
 
+def _current_week(rows):
+    """当期周：rows（2026 CSV 行）中出现次数最多的 week；并列取字典序最大；无数据返回 None。"""
+    counts = {}
+    for r in rows:
+        w = (r.get("week") or "").strip()
+        if not w:
+            continue
+        counts[w] = counts.get(w, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda w: (counts[w], w))
 
 
 def main():
@@ -170,7 +181,7 @@ def main():
         pct = to_float(r.get("mom1_pct"))
         if pct is not None:
             mom = pct / 100.0
-        metrics.append((xid, r["week"], to_float(r["price"]), to_int(r.get("supply")), mom))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), to_int(r.get("supply")), mom))
 
     # 2019 历史
     matched = 0
@@ -188,7 +199,7 @@ def main():
         else:
             xid = f'{city}|2019|{r["xiaoqu_id"]}'
             add_xq(xid, city, r["district"], r.get("plate") or None, name, lng=lng, lat=lat)
-        metrics.append((xid, r["week"], to_float(r["price"]), None, None))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), None, None))
 
     # —— 数据充足度：≥3 期、跨度≥365天、相邻缺口≤365天，才允许计算温度/阶段 ——
     from datetime import date
@@ -247,9 +258,10 @@ def main():
             storage.upsert_xiaoqu(conn, m)
 
         n_metric = 0; n_temp = 0
+        current_week = _current_week(cur)
         for xid, week, price, supply, mom in metrics:
             temp = None; stage = None
-            if sufficient(xid) and week == "2026-W46":
+            if sufficient(xid) and current_week is not None and week == current_week:
                 n_mom = 50.0 if mom is None else scoring.percentile_normalize(mom, city_mom.get(xiaoqu[xid]["city"], []))
                 temp = scoring.compute_temperature({"mom4": n_mom, "absorb": 50.0, "bargain": 50.0, "heat": 50.0})
                 stage = scoring.classify_stage(temp, mom if mom is not None else 0.0)
@@ -308,3 +320,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
