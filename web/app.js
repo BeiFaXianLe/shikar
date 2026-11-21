@@ -1856,7 +1856,7 @@
           }
           // 第一档不足 3 条：去掉阶段限制、价带放宽到 ±30% 再试一次。
           return load(
-            sim.queryFor(ctx, { band: sim.RELAXED_BAND, dropStage: true }),
+            sim.queryFor(ctx, { band: sim.RELAXED_BAND }),
             true
           );
         })

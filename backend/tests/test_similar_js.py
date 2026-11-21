@@ -50,6 +50,8 @@ const items = [
   { id: "E", name: "E", city: "北京", district: "朝阳", data_points: 4, temperature: 50.0, latest_price: 50000, latest_week: "2026-W30" },
   { id: "X", name: "本小区", city: "北京", district: "朝阳", data_points: 4, temperature: 50.0, latest_price: 50000, latest_week: "2026-W30" },
   { id: "F", name: "F", city: "北京", district: "朝阳", data_points: 4, temperature: 40.0, latest_price: 50000, latest_week: "2026-W30", stage: "冰点" },
+  // 真实 catalog 形状：temperature 可能为 null（dp>=2 但跨度不足）
+  { id: "G", name: "G", city: "北京", district: "朝阳", data_points: 3, temperature: null, latest_price: 48000, latest_week: "2026-W30", stage: null },
 ];
 const kept = S.recommend(items, ctx, { band: S.DEFAULT_BAND });
 const ids = kept.map(i => i.id);
@@ -60,6 +62,7 @@ assert(ids.indexOf("X") < 0, "TC5 未排除自身");
 assert(ids.indexOf("A") >= 0 && ids.indexOf("F") >= 0, "TC3/4 合格候选被误杀");
 assert(ids.indexOf("E") < ids.indexOf("A"), "TC6 温度差为 0 的候选应排最前");
 assert(ids.indexOf("A") < ids.indexOf("F"), "TC6 温度差排序不正确");
+assert(ids.indexOf("G") < 0, "已有 3 条带温度候选时，无温度候选不应作填充");
 assert(kept.length <= S.MAX_RESULTS, "推荐数量超过上限");
 
 const r = S.reason(kept.filter(i => i.id === "A")[0], ctx);
@@ -76,9 +79,16 @@ assert(sr.indexOf("低 4.0%") >= 0, "降级时理由应给出真实价格差");
 
 const q = S.queryFor(ctx, {});
 assert(q.city === "北京" && q.price_week === "2026-W30", "queryFor 缺少 city/price_week");
-assert(q.stage === "温和", "充分时应带 stage");
+assert(q.stage === undefined, "queryFor 绝不能传 stage（那是学校阶段 POI 过滤）");
 const sparseQ = S.queryFor(sparseCtx, {});
 assert(sparseQ.stage === undefined && sparseQ.district === "朝阳", "降级时应按同区且不带 stage");
+
+// 候选不足 3 条：无温度候选作为填充，且理由不提温度/阶段
+const few = S.recommend([items[0], items[7]], ctx, { band: S.DEFAULT_BAND });
+assert(few.length === 2 && few[0].id === "A" && few[1].id === "G", "无温度候选应排后并作填充");
+const gr = S.reason(items[7], ctx);
+assert(gr.indexOf("温度") < 0 && gr.indexOf("阶段") < 0, "无温度候选的理由不得提温度/阶段");
+assert(gr.indexOf("均价") >= 0 && gr.indexOf("期次") >= 0, "无温度候选的理由应只写价格与期次");
 
 console.log(JSON.stringify({ ok: true, kept: ids }));
 """

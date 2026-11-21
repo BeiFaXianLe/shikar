@@ -273,3 +273,19 @@ def test_xiaoqu_list_unchanged(live_server: dict) -> None:
     assert isinstance(payload, list)
     assert len(payload) == 5
     assert [r["id"] for r in payload] == sorted(r["id"] for r in payload)
+
+
+def test_items_include_temperature_and_stage(conn: sqlite3.Connection) -> None:
+    """catalog items 暴露 temperature/stage（供相似小区复用），无值时显式返回 None。"""
+    upsert_metric(conn, {
+        "xiaoqu_id": "北京|1", "week": "2026-W46", "price": 49480.0,
+        "temperature": 61.5, "stage": "升温",
+    })
+    res = query_catalog(conn, city="北京")
+    item = next(i for i in res["items"] if i["id"] == "北京|1")
+    assert item["temperature"] == 61.5
+    assert item["stage"] == "升温"
+
+    other = next(i for i in res["items"] if i["id"] == "北京|2")
+    assert "temperature" in other and other["temperature"] is None
+    assert "stage" in other and other["stage"] is None

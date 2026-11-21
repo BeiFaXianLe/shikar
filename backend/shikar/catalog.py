@@ -283,6 +283,7 @@ def query_catalog(
     extra_cols = ",x.lng AS lng,x.lat AS lat" if sort == "distance_center" else ""
     rows = conn.execute(
         f"SELECT x.id,x.city,x.district,x.plate,x.name,m.week,m.price,m.mom4,"
+        f"m.temperature AS temperature,m.stage AS stage,"
         f"{distance_sql} AS sort_distance{extra_cols} {from_sql} "
         f"WHERE 1 = 1 {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
         distance_params + metric_join_params + params + order_params + [size_n, offset],
@@ -318,6 +319,9 @@ def query_catalog(
                 "latest_price": row["price"],
                 "latest_week": row["week"],
                 "latest_mom": row["mom4"],
+                # 温度/阶段为该行指标值（可能为 None：数据不足）；供前端推荐/展示复用。
+                "temperature": row["temperature"],
+                "stage": row["stage"],
                 "price_is_current": row["week"] == max_week,
                 # 价格来源：本行价格取自哪一期指标（逐行显示，明确口径）。
                 "price_source_week": row["week"],

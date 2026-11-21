@@ -69,7 +69,9 @@
       q.price_max = Math.round(ctx.price * (1 + band));
     }
     if (ctx.priceWeek) q.price_week = ctx.priceWeek;
-    if (ctx.sufficient && !opts.dropStage && ctx.stage) q.stage = ctx.stage;
+    // 千万不要传 stage：/api/catalog 的 stage 是「学校阶段」POI 过滤（查 poi.subtype），
+    // 与温度阶段无关；把「温和」塞进去会让查询恒 0 条。
+    // 温度阶段只用于理由文案，不参与过滤/排序。
     return q;
   }
 
@@ -92,25 +94,38 @@
     return out;
   }
 
-  /** 排序：温度差升序（无温度排最后）→ 价格差升序 → id 升序。 */
+  /** 排序：有温度的在前（温度差升序）→ 无温度的在后（价格差升序）→ id。 */
   function rank(items, ctx) {
-    function tempDiff(it) {
-      if (!ctx.sufficient || ctx.temperature === null) return Infinity;
-      var t = num(it.temperature);
-      return t === null ? Infinity : Math.abs(t - ctx.temperature);
+    function hasTemp(it) {
+      return ctx.sufficient && ctx.temperature !== null && num(it.temperature) !== null;
     }
     function priceDiff(it) {
       var p = num(it.latest_price);
       if (p === null || ctx.price === null) return Infinity;
       return Math.abs(p - ctx.price);
     }
-    return (items || []).slice().sort(function (a, b) {
-      var da = tempDiff(a), db = tempDiff(b);
+    function cmpId(a, b) {
+      return String(a.id) < String(b.id) ? -1 : (String(a.id) > String(b.id) ? 1 : 0);
+    }
+    var withTemp = [];
+    var withoutTemp = [];
+    (items || []).forEach(function (it) {
+      (hasTemp(it) ? withTemp : withoutTemp).push(it);
+    });
+    withTemp.sort(function (a, b) {
+      var da = Math.abs(num(a.temperature) - ctx.temperature);
+      var db = Math.abs(num(b.temperature) - ctx.temperature);
       if (da !== db) return da - db;
       var pa = priceDiff(a), pb = priceDiff(b);
       if (pa !== pb) return pa - pb;
-      return String(a.id) < String(b.id) ? -1 : (String(a.id) > String(b.id) ? 1 : 0);
+      return cmpId(a, b);
     });
+    withoutTemp.sort(function (a, b) {
+      var pa = priceDiff(a), pb = priceDiff(b);
+      if (pa !== pb) return pa - pb;
+      return cmpId(a, b);
+    });
+    return withTemp.concat(withoutTemp);
   }
 
   /** 推荐理由：只拼真实字段 + 期次口径；当前小区数据不足时不出现任何温度话术。 */
@@ -144,9 +159,16 @@
   /** 推荐列表：过滤 + 排序 + 截断到 3–5 条。 */
   function recommend(items, ctx, opts) {
     opts = opts || {};
-    var filtered = filterCandidates(items, ctx, opts);
-    var ranked = rank(filtered, ctx);
-    return ranked.slice(0, opts.max || MAX_RESULTS);
+    var ranked = rank(filterCandidates(items, ctx, opts), ctx);
+    var max = opts.max || MAX_RESULTS;
+    var hasTemp = function (it) {
+      return ctx.sufficient && ctx.temperature !== null && num(it.temperature) !== null;
+    };
+    var primary = ranked.filter(hasTemp);
+    // 候选不足 3 条时才用「无温度」候选填充；理由对它们只写价格。
+    if (primary.length >= MIN_RESULTS) return primary.slice(0, max);
+    var filler = ranked.filter(function (it) { return !hasTemp(it); });
+    return primary.concat(filler).slice(0, max);
   }
 
   root.ShikarSimilar = {
