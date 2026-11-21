@@ -23,6 +23,7 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import date, timedelta
 from typing import Optional
 
 from shikar import pipeline, storage, subway
@@ -43,6 +44,13 @@ def repo_root() -> str:
 
 #: Demo 每小区周数。
 _DEMO_WEEKS = 10
+
+
+def _demo_week(i: int) -> str:
+    """Demo 第 ``i`` 期的 ISO 周（约 13 周一步，跨年以满足 ≥12 个月门槛）。"""
+    d = date(2025, 1, 6) + timedelta(days=13 * 7 * i)
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
 
 #: Demo 小区定义：(city, district, plate, name, base_price, weekly_step)；
 #: ``weekly_step`` 为每周期价格相对基价的线性增量（正=涨、负=跌），走势有升有降。
@@ -86,7 +94,7 @@ def seed_demo(conn: sqlite3.Connection) -> dict:
                     plate=plate,
                     xiaoqu_id="",
                     xiaoqu_name=name,
-                    week=f"2025-W{i + 1:02d}",
+                    week=_demo_week(i),
                     price=round(base_price + step * i, 2),
                     supply=supply,
                     vol30=vol30,
@@ -234,3 +242,4 @@ def run(argv: Optional[list[str]] = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover  （脚本入口）
     run()
+

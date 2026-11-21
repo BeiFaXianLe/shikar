@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from datetime import date
 from typing import Iterable, Mapping, Optional, Sequence
 
 from shikar import scoring, storage  # noqa: F401  (storage 供直接调用)
@@ -35,6 +36,58 @@ __all__ = ["ingest", "recompute"]
 
 # 分项名称（与 storage 列名、scoring.compute_temperature 的入参键一致）。
 _SUBSCORES: tuple[str, ...] = ("mom4", "absorb", "bargain", "heat")
+
+# 数据充分性门槛（docs/04 §2.2/§2.4，与 scripts/build_db.py 的 sufficient() 同口径）：
+# 期数 >= 3、首末跨度 >= 365 天、最大相邻缺口 <= 365 天，三者全满足才给温度/阶段。
+MIN_PERIODS = 3
+MIN_SPAN_DAYS = 365
+MAX_GAP_DAYS = 365
+
+
+def _parse_week(week: object) -> Optional[date]:
+    """把 ``YYYY-Www`` / ``YYYY-MM`` 解析为日期（用于跨度与缺口判定）。
+
+    与 ``scripts/build_db.py`` 的 ``parse_week`` 保持一致；不可解析返回 ``None``。
+    """
+    if not week:
+        return None
+    s = str(week)
+    try:
+        if "-W" in s:
+            y, w = s.split("-W", 1)
+            return date.fromisocalendar(int(y), int(w), 1)
+        if "-" in s:
+            y, m = s.split("-")[:2]
+            return date(int(y), int(m), 1)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def is_sufficient(
+    weeks: Iterable[object],
+    *,
+    min_periods: int = MIN_PERIODS,
+    min_span_days: int = MIN_SPAN_DAYS,
+    max_gap_days: int = MAX_GAP_DAYS,
+) -> bool:
+    """判断某小区的期次是否足以给出温度/阶段（docs/04 §2.2）。
+
+    :param weeks: 该小区的期次集合（``YYYY-Www`` / ``YYYY-MM``，可重复、可非法）。
+    :param min_periods: 最少期数。
+    :param min_span_days: 首末期次的最小跨度（天）。
+    :param max_gap_days: 相邻期次允许的最大缺口（天）。
+    :return: 三条门槛全部满足时为 ``True``。
+    """
+    dates = sorted({d for d in (_parse_week(w) for w in weeks) if d is not None})
+    if len(dates) < min_periods:
+        return False
+    if (dates[-1] - dates[0]).days < min_span_days:
+        return False
+    gaps = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
+    if gaps and max(gaps) > max_gap_days:
+        return False
+    return True
 
 
 def _make_xiaoqu_id(city: str, district: str, xiaoqu_name: str) -> str:
@@ -68,6 +121,10 @@ def ingest(
     conn: sqlite3.Connection,
     records: Iterable[MetricRecord],
     weights: Optional[Mapping[str, float]] = None,
+    *,
+    min_periods: int = MIN_PERIODS,
+    min_span_days: int = MIN_SPAN_DAYS,
+    max_gap_days: int = MAX_GAP_DAYS,
 ) -> dict:
     """把一批来源记录写入库，并重算受影响小区的派生指标。
 
@@ -132,7 +189,14 @@ def ingest(
         metric_rows += 1
 
     if affected:
-        recompute(conn, xiaoqu_ids=list(affected.keys()), weights=weights)
+        recompute(
+            conn,
+            xiaoqu_ids=list(affected.keys()),
+            weights=weights,
+            min_periods=min_periods,
+            min_span_days=min_span_days,
+            max_gap_days=max_gap_days,
+        )
 
     return {"xiaoqu": len(affected), "metrics": metric_rows}
 
@@ -169,6 +233,9 @@ def recompute(
     weights: Optional[Mapping[str, float]] = None,
     window: int = 52,
     min_history: int = 4,
+    min_periods: int = MIN_PERIODS,
+    min_span_days: int = MIN_SPAN_DAYS,
+    max_gap_days: int = MAX_GAP_DAYS,
 ) -> int:
     """重算指定（或全部）小区的派生指标并回写数据库。
 
@@ -181,6 +248,10 @@ def recompute(
       **截至当周（含）最近 ``window`` 条**的已有数值为样本，调用
       :func:`scoring.percentile_normalize`；``value`` 缺失或样本数
       ``< min_history`` 时取 ``50.0``；
+    * **数据充分性（docs/04 §2.2）**：期数 ≥ ``min_periods``、首末跨度
+      ≥ ``min_span_days``、最大缺口 ≤ ``max_gap_days``，三者全满足才继续；
+      否则该小区所有期次 ``temperature=None``、``stage=None``（``mom4`` /
+      ``absorb`` 仍照常写回——它们是读数，不是结论）；
     * ``temperature = scoring.compute_temperature({mom4, absorb, bargain, heat})``
       （分项均为上一步的归一化值）；
     * ``stage = scoring.classify_stage(temperature, mom4 if mom4 is not None
@@ -197,6 +268,9 @@ def recompute(
         :func:`scoring.compute_temperature`。
     :param window: 归一化采样窗口（最近多少条），默认 52。
     :param min_history: 归一化最少样本数，默认 4。
+    :param min_periods: 数据充分性：最少期数，默认 3（与 build_db 同口径）。
+    :param min_span_days: 数据充分性：首末期次最小跨度（天），默认 365。
+    :param max_gap_days: 数据充分性：相邻期次最大缺口（天），默认 365。
     :return: 实际更新（UPDATE）的行数。
     """
     if xiaoqu_ids is None:
@@ -210,6 +284,14 @@ def recompute(
         n = len(series)
         if n == 0:
             continue
+
+        # 数据充分性（docs/04 §2.2）：不足则温度/阶段置空，只保留读数（mom4/absorb）。
+        sufficient = is_sufficient(
+            [r.get("week") for r in series],
+            min_periods=min_periods,
+            min_span_days=min_span_days,
+            max_gap_days=max_gap_days,
+        )
 
         prices = [_safe_float(r.get("price")) for r in series]
         supplies = [_safe_float(r.get("supply")) for r in series]
@@ -242,19 +324,23 @@ def recompute(
         n_heat = _percentile_series(heats, window, min_history)
 
         for i, row in enumerate(series):
-            temperature = scoring.compute_temperature(
-                {
-                    "mom4": n_mom4[i],
-                    "absorb": n_absorb[i],
-                    "bargain": n_bargain[i],
-                    "heat": n_heat[i],
-                },
-                weights,
-            )
             mom4_val = mom4s[i]
-            stage = scoring.classify_stage(
-                temperature, mom4_val if mom4_val is not None else 0.0
-            )
+            if sufficient:
+                temperature = scoring.compute_temperature(
+                    {
+                        "mom4": n_mom4[i],
+                        "absorb": n_absorb[i],
+                        "bargain": n_bargain[i],
+                        "heat": n_heat[i],
+                    },
+                    weights,
+                )
+                stage = scoring.classify_stage(
+                    temperature, mom4_val if mom4_val is not None else 0.0
+                )
+            else:
+                temperature = None
+                stage = None
 
             cur = conn.execute(
                 "UPDATE xiaoqu_metric_weekly "

@@ -510,21 +510,48 @@
       body.innerHTML = "";
       var t = data.temperature;
       var numColor = tempColor(t);
-      body.appendChild(
-        el("div", { class: "gauge-wrap" }, [
-          el("div", { class: "gauge" }, [tempGauge(t)]),
-          el("div", { class: "gauge-temp" }, [
-            el("div", { class: "num", style: "color:" + numColor }, [
-              document.createTextNode(fmtNum(t, 1)),
-              el("span", { class: "unit", text: " °C 温度" }),
+      if (t === null || t === undefined) {
+        // 无合格样本：不画仪表，避免 0 分表盘被误读成「极冷」。
+        body.appendChild(
+          el("div", { class: "gauge-wrap" }, [
+            el("div", { class: "gauge-temp" }, [
+              el("div", { class: "num", style: "color:" + numColor, text: "—" }),
+              el("div", {
+                class: "label",
+                text: "数据不足：本城暂无满足 3 期 / 12 个月门槛的小区",
+              }),
             ]),
-            el("div", {
-              class: "label",
-              text: "0–100 温度 · 冷 → 热" + (data.districtLabel ? " · " + data.districtLabel : ""),
-            }),
-          ]),
-        ])
-      );
+          ])
+        );
+      } else {
+        body.appendChild(
+          el("div", { class: "gauge-wrap" }, [
+            el("div", { class: "gauge" }, [tempGauge(t)]),
+            el("div", { class: "gauge-temp" }, [
+              el("div", { class: "num", style: "color:" + numColor }, [
+                document.createTextNode(fmtNum(t, 1)),
+                el("span", { class: "unit", text: " °C 温度" }),
+              ]),
+              el("div", {
+                class: "label",
+                text: "0–100 温度 · 冷 → 热" + (data.districtLabel ? " · " + data.districtLabel : ""),
+              }),
+            ]),
+          ])
+        );
+      }
+
+      var insuf = Number(data.insufficient || 0);
+      if (insuf > 0) {
+        body.appendChild(
+          el("div", {
+            class: "city-insufficient",
+            text:
+              "本城 " + insuf + "/" + (data.total || insuf) +
+              " 个小区数据不足，未计入均温与榜单",
+          })
+        );
+      }
       body.appendChild(
         el("div", { class: "boards" }, [
           board("最热", "hot", data.top_hot),

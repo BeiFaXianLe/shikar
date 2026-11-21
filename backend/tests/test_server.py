@@ -26,7 +26,7 @@ import pytest
 
 from shikar import storage
 from shikar.api import create_server
-from shikar.main import seed_demo
+from shikar.main import _DEMO_WEEKS, _demo_week, seed_demo
 from shikar.overview import compute_overview
 
 
@@ -207,7 +207,7 @@ def test_seed_demo_overview_has_two_cities() -> None:
         assert cities == ["北京", "天津"]
         for c in ov["cities"]:
             assert c["count"] > 0
-        assert ov["week"] == "2025-W10"
+        assert ov["week"] == _demo_week(_DEMO_WEEKS - 1)
     finally:
         conn.close()
 

@@ -62,6 +62,21 @@ def _latest_row(series: list[dict]) -> Optional[dict]:
     return None
 
 
+def _last_row(series: list[dict]) -> Optional[dict]:
+    """取某小区指标序列中按 ``week`` 升序的最后一条（不要求 ``temperature`` 非空）。
+
+    用于区分「没有数据」与「有数据但温度不足」：后者不计入均温/榜单，
+    但要在总览里以 ``insufficient`` 计数出现（docs/04 §3.2）。
+
+    :param series: 按 ``week`` 升序的指标行列表。
+    :return: 最后一条带 ``week`` 的行；没有则 ``None``。
+    """
+    for row in reversed(series):
+        if row.get("week") is not None:
+            return row
+    return None
+
+
 def _summary_item(xiaoqu: dict, row: dict) -> dict:
     """把一个小区的「最新行」与主数据合成榜单条目。
 
@@ -98,11 +113,17 @@ def compute_overview(
     """聚合小区的最新指标，生成首页总览结构（可选取城市 / 区过滤）。
 
     对每个小区（``storage.list_xiaoqu``）取其指标序列
-    （``storage.get_metric_series``），挑出「按 ``week`` 升序、``temperature``
-    非空」的最后一条作为最新行；无最新行的小区直接跳过。随后：
+    （``storage.get_metric_series``）：
 
-    * 全局 ``week`` 取所有最新行 ``week`` 的字符串最大值（无则 ``None``）；
-    * 按 ``city`` 分组，逐城计算均温、小区数与四类榜单。
+    * 「合格小区」= 存在 ``temperature`` 非空的历史行，取其最后一条作为最新行；
+    * 「数据不足小区」= 有数据但所有行 ``temperature`` 均为空（docs/04 §2.2 门槛
+      未满足），**不计入均温与四类榜单**，只计入 ``insufficient`` 计数。
+
+    随后：
+
+    * 全局 ``week`` 取所有小区最后一条有数据行的 ``week`` 最大值（无数据才 ``None``）；
+    * 按 ``city`` 分组，逐城计算均温、``count``（合格数）、``total``（有数据数）、
+      ``insufficient`` 与 ``insufficient_ratio``，以及四类榜单（只含合格小区）。
 
     过滤在读取小区列表时下推给 :func:`shikar.storage.list_xiaoqu`：``city``
     只保留该城小区，``district`` 在 ``city`` 基础上再收窄到该区。其余聚合
@@ -112,36 +133,47 @@ def compute_overview(
     :param city: 只统计该城市的小区；``None`` 表示不限城市。
     :param district: 只统计该区的小区（在 ``city`` 基础上再过滤）；``None``
         表示不限区。
-    :return: 形如 ``{"week": <str|None>, "cities": [...]}`` 的字典；空库或过滤
-        后无可用小区时返回 ``{"week": None, "cities": []}``。
+    :return: 形如 ``{"week": <str|None>, "cities": [...]}`` 的字典；城市项含
+        ``temperature`` / ``count`` / ``total`` / ``insufficient`` /
+        ``insufficient_ratio`` 与四类榜单。空库或过滤后无数据时返回
+        ``{"week": None, "cities": []}``。
     """
     xiaoqu_list = storage.list_xiaoqu(conn, city=city, district=district)
 
-    # city -> 该城所有最新行对应的榜单条目列表。
+    # city -> 合格（temperature 非空）小区的榜单条目；另有总数与不足数。
     grouped: dict[str, list[dict]] = {}
+    totals: dict[str, int] = {}
+    insufficient: dict[str, int] = {}
     weeks: list[str] = []
 
     for xiaoqu in xiaoqu_list:
         series = storage.get_metric_series(conn, xiaoqu.get("id"))
         if not series:
             continue
-        row = _latest_row(series)
-        if row is None:
+        last = _last_row(series)
+        if last is None:
             continue
 
-        city = xiaoqu.get("city")
-        # city 为空的记录无法归组，跳过以避免产出无名城市。
-        if city is None:
+        city_name = xiaoqu.get("city")
+        # 城市为空的记录无法归组，跳过以避免产出无名城市。
+        if city_name is None:
             continue
 
-        grouped.setdefault(city, []).append(_summary_item(xiaoqu, row))
-        week = row.get("week")
+        totals[city_name] = totals.get(city_name, 0) + 1
+        week = last.get("week")
         if week is not None:
             weeks.append(week)
 
+        row = _latest_row(series)
+        if row is None:
+            # 有数据但温度不足：不参与均温与榜单，只计数（docs/04 §3.2）。
+            insufficient[city_name] = insufficient.get(city_name, 0) + 1
+            continue
+        grouped.setdefault(city_name, []).append(_summary_item(xiaoqu, row))
+
     cities_out: list[dict] = []
-    for city in sorted(grouped.keys()):
-        items = grouped[city]
+    for city_name in sorted(totals.keys()):
+        items = grouped.get(city_name, [])
 
         temps = [item["temperature"] for item in items if item["temperature"] is not None]
         mean_temp: Optional[float] = (
@@ -150,11 +182,18 @@ def compute_overview(
 
         rising_source = [item for item in items if item["mom4"] is not None]
 
+        total = totals[city_name]
+        n_insufficient = insufficient.get(city_name, 0)
         cities_out.append(
             {
-                "city": city,
+                "city": city_name,
                 "temperature": mean_temp,
                 "count": len(items),
+                "total": total,
+                "insufficient": n_insufficient,
+                "insufficient_ratio": (
+                    round(n_insufficient / total, 3) if total else 0.0
+                ),
                 "top_hot": _top(items, "temperature", reverse=True),
                 "top_cold": _top(items, "temperature", reverse=False),
                 "top_rising": _top(rising_source, "mom4", reverse=True),
