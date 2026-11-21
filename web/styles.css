@@ -390,6 +390,32 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
 .signal .reason { color: var(--ink-soft); font-size: 13px; margin-top: 3px; word-break: break-word; }
 .signals-empty { color: var(--ink-faint); text-align: center; padding: 26px; font-size: 14px; }
 
+/* 形态 A：相似小区 */
+.similar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.similar-item {
+  display: grid;
+  grid-template-columns: minmax(8em, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(210, 170, 109, 0.12);
+}
+.similar-item:last-child { border-bottom: none; }
+.similar-name { color: var(--ink); text-decoration: none; font-size: 14px; }
+.similar-name:hover { color: var(--gold); }
+.similar-meta {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--gold);
+  white-space: nowrap;
+}
+.similar-reason {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.similar-empty { color: var(--ink-faint); text-align: center; padding: 20px; font-size: 13px; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 860px) {
   .hero { grid-template-columns: 1fr; padding: 32px 22px 36px; gap: 0; }
