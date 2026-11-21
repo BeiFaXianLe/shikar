@@ -251,3 +251,57 @@ def test_default_host_is_loopback() -> None:
             server.server_close()
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 同板块均价（详情页附加字段）
+# --------------------------------------------------------------------------- #
+def _plate_server(plates: list[tuple[str, str | None, float]]) -> tuple[dict, object, object]:
+    """造同板块若干小区并起一个后台服务，返回 (server, conn, srv)。"""
+    conn = _threadsafe_conn()
+    init_db(conn)
+    for xid, plate, price in plates:
+        upsert_xiaoqu(conn, {
+            "id": xid, "city": "北京", "district": "朝阳", "plate": plate,
+            "name": xid, "alias": None, "lng": 116.4, "lat": 39.9,
+            "build_year": None, "households": None,
+        })
+        upsert_metric(conn, {"xiaoqu_id": xid, "week": "2026-W01", "price": price})
+    srv = create_server(conn, host="127.0.0.1", port=0)
+    host, port = srv.server_address[0], srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    return {"host": host, "port": port}, conn, srv
+
+
+def test_detail_plate_stats_avg_and_diff() -> None:
+    """同板块 3 个小区 4/5/6 万：均价 5 万、count=3、本小区 diff_pct=0.2。"""
+    server, conn, srv = _plate_server([
+        ("P1", "望京", 40000.0), ("P2", "望京", 50000.0), ("P3", "望京", 60000.0),
+    ])
+    try:
+        status, _h, body = _json(server, "GET", "/api/xiaoqu/P3")
+        assert status == 200
+        ps = body["plate_stats"]
+        assert ps["plate"] == "望京"
+        assert ps["avg_price"] == pytest.approx(50000.0)
+        assert ps["count"] == 3
+        assert ps["price"] == pytest.approx(60000.0)
+        assert ps["diff_pct"] == pytest.approx(0.2, abs=1e-6)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        conn.close()
+
+
+def test_detail_plate_stats_null_when_no_plate() -> None:
+    """板块为空：plate_stats 为 None，详情仍 200。"""
+    server, conn, srv = _plate_server([("Q1", None, 40000.0)])
+    try:
+        status, _h, body = _json(server, "GET", "/api/xiaoqu/Q1")
+        assert status == 200
+        assert body["plate_stats"] is None
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        conn.close()

@@ -253,6 +253,66 @@ def test_overview_all_insufficient_has_null_temperature(empty_conn: sqlite3.Conn
 
 
 # --------------------------------------------------------------------------- #
+# 较上期变化（delta）与分区温度
+# --------------------------------------------------------------------------- #
+def _add_xq(conn, xid: str, district: str, rows: list[tuple[str, float | None]]) -> None:
+    """直接写入带 temperature 的指标行（绕过门槛，便于精确构造）。"""
+    storage.upsert_xiaoqu(conn, {
+        "id": xid, "city": "北京", "district": district, "plate": "望京", "name": xid,
+    })
+    for week, temp in rows:
+        storage.upsert_metric(conn, {
+            "xiaoqu_id": xid, "week": week, "price": 50000.0, "temperature": temp,
+        })
+
+
+def test_overview_delta_from_prev_observation(empty_conn: sqlite3.Connection) -> None:
+    """两期观测 40 → 44：较上期 +4.0，参与数 1，无不足。"""
+    _add_xq(empty_conn, "D1", "朝阳", [("2024-W01", 40.0), ("2024-W14", 44.0)])
+    city = compute_overview(empty_conn)["cities"][0]
+    assert city["temperature_delta"] == 4.0
+    assert city["delta_count"] == 1
+    assert city["delta_insufficient"] == 0
+    assert city["delta_insufficient_ratio"] == 0.0
+
+
+def test_overview_delta_null_when_no_prev(empty_conn: sqlite3.Connection) -> None:
+    """只有一期：delta 为 None，并计入「无可用上期」。"""
+    _add_xq(empty_conn, "D2", "朝阳", [("2024-W01", 50.0)])
+    city = compute_overview(empty_conn)["cities"][0]
+    assert city["temperature_delta"] is None
+    assert city["delta_count"] == 0
+    assert city["delta_insufficient"] == 1
+    assert city["delta_insufficient_ratio"] == 1.0
+
+
+def test_overview_delta_skips_too_old_prev(empty_conn: sqlite3.Connection) -> None:
+    """上期观测序号差 >4（太旧）：不算 delta，计入 insufficient。"""
+    rows: list[tuple[str, float | None]] = [("2024-W01", 40.0)]
+    rows += [(f"2024-W{2 + i:02d}", None) for i in range(4)]  # 中间 4 条无温度
+    rows.append(("2024-W06", 50.0))                            # 序号差 = 5
+    _add_xq(empty_conn, "D3", "朝阳", rows)
+    city = compute_overview(empty_conn)["cities"][0]
+    assert city["temperature_delta"] is None
+    assert city["delta_count"] == 0
+    assert city["delta_insufficient"] == 1
+
+
+def test_overview_districts_aggregate_and_sort(empty_conn: sqlite3.Connection) -> None:
+    """分区温度按降序、字段齐全、不足比例正确。"""
+    _add_xq(empty_conn, "E1", "朝阳", [("2024-W01", 50.0)])
+    _add_xq(empty_conn, "E2", "海淀", [("2024-W01", 40.0)])
+    _add_xq(empty_conn, "E3", "海淀", [("2024-W01", None)])  # 不足
+    city = compute_overview(empty_conn)["cities"][0]
+    ds = city["districts"]
+    assert [d["district"] for d in ds] == ["朝阳", "海淀"]
+    assert ds[0]["temperature"] == 50.0 and ds[0]["insufficient_ratio"] == 0.0
+    assert ds[1]["temperature"] == 40.0
+    assert ds[1]["total"] == 2 and ds[1]["count"] == 1 and ds[1]["insufficient"] == 1
+    assert ds[1]["insufficient_ratio"] == 0.5
+
+
+# --------------------------------------------------------------------------- #
 # HTTP 接口测试
 # --------------------------------------------------------------------------- #
 def _threadsafe_conn() -> sqlite3.Connection:
@@ -307,6 +367,8 @@ def test_api_overview(live_server: dict) -> None:
         assert set(city) == {
             "city", "temperature", "count",
                 "total", "insufficient", "insufficient_ratio",
+                "temperature_delta", "delta_count", "delta_insufficient",
+                "delta_insufficient_ratio", "districts",
             "top_hot", "top_cold", "top_rising", "top_falling",
         }
         assert isinstance(city["temperature"], float)

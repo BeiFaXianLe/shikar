@@ -305,6 +305,44 @@ def list_xiaoqu(
     return [dict(r) for r in cur.fetchall()]
 
 
+def plate_price_stats(
+    conn: sqlite3.Connection, city: Optional[str], plate: Optional[str]
+) -> Optional[dict]:
+    """同城同板块「各自最新一期」的均价与小区数（单条只读聚合 SQL）。
+
+    只统计最新一期 ``price`` 非空的小区，避免把不同期次的价格混在一起平均。
+
+    :param conn: 已打开的 SQLite 连接（只读使用）。
+    :param city: 城市（``None`` / 空 → 返回 ``None``）。
+    :param plate: 板块（``None`` / 空 → 返回 ``None``）。
+    :return: ``{"avg_price": float|None, "count": int}``；无匹配时 ``avg_price`` 为
+        ``None``、``count`` 为 0。
+    """
+    if not city or not plate:
+        return None
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, AVG(m.price) AS avg_price "
+        "FROM xiaoqu x JOIN xiaoqu_metric_weekly m ON m.xiaoqu_id = x.id "
+        "WHERE x.city = ? AND x.plate = ? AND m.price IS NOT NULL "
+        "AND m.week = (SELECT MAX(w.week) FROM xiaoqu_metric_weekly w "
+        "              WHERE w.xiaoqu_id = x.id)",
+        (city, plate),
+    ).fetchone()
+    if row is None:
+        return {"avg_price": None, "count": 0}
+    return {"avg_price": row["avg_price"], "count": int(row["n"])}
+
+
+def latest_price(conn: sqlite3.Connection, xiaoqu_id: str) -> Optional[float]:
+    """取某小区最新一期非空价格（单条只读查询）。"""
+    row = conn.execute(
+        "SELECT price FROM xiaoqu_metric_weekly "
+        "WHERE xiaoqu_id = ? AND price IS NOT NULL ORDER BY week DESC LIMIT 1",
+        (xiaoqu_id,),
+    ).fetchone()
+    return row["price"] if row is not None else None
+
+
 # --------------------------------------------------------------------------- #
 # 信号事件
 # --------------------------------------------------------------------------- #

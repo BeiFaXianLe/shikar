@@ -95,3 +95,10 @@ def test_index_html_links_assets() -> None:
     assert "styles.css" in html, "index.html 未引用 styles.css"
     assert "app.js" in html, "index.html 未引用 app.js"
     assert "shikar" in html, "index.html 缺少品牌标题"
+
+
+def test_signals_empty_state_explains_missing_volume_data() -> None:
+    """信号功能推迟：空状态必须说明缺成交量数据，不能写成「暂无信号」。"""
+    js = _read("app.js")
+    assert "信号功能需成交量数据，当前数据源未提供，暂不展示" in js
+    assert "暂无信号" not in js

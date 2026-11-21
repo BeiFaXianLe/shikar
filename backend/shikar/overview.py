@@ -45,21 +45,8 @@ __all__ = ["compute_overview", "list_districts"]
 
 #: 每个榜单最多返回的条数。
 _BOARD_SIZE = 5
-
-
-def _latest_row(series: list[dict]) -> Optional[dict]:
-    """取某小区指标序列中「按 week 升序、temperature 非空」的最后一条。
-
-    ``series`` 由 :func:`shikar.storage.get_metric_series` 返回，已按 ``week``
-    升序排序，因此从尾部向前找到第一条 ``temperature`` 非空的行即为最新行。
-
-    :param series: 某小区的周度指标序列（``week`` 升序）。
-    :return: 最新行字典；若整段序列都没有非空 ``temperature``，返回 ``None``。
-    """
-    for row in reversed(series):
-        if row.get("temperature") is not None:
-            return row
-    return None
+#: 计算「较上期变化」时允许的最大观测序号差；超过视为「上期太旧」，与无上期同样计。
+MAX_DELTA_GAP = 4
 
 
 def _last_row(series: list[dict]) -> Optional[dict]:
@@ -75,6 +62,28 @@ def _last_row(series: list[dict]) -> Optional[dict]:
         if row.get("week") is not None:
             return row
     return None
+
+
+def _latest_index(series: list[dict]) -> Optional[int]:
+    """返回 ``temperature`` 非空的最后一条的下标；没有则 ``None``。"""
+    for i in range(len(series) - 1, -1, -1):
+        if series[i].get("temperature") is not None:
+            return i
+    return None
+
+
+def _prev_row(series: list[dict], latest_index: int) -> tuple[Optional[dict], Optional[int]]:
+    """取最新行之前、最近一条 ``temperature`` 非空的行与其**观测序号差**。
+
+    序号差 = ``latest_index - prev_index``（按序列下标，不解析周字符串）。
+    与 ``mom4`` 的「前第 4 条记录」口径一致：比较的是观测，不是日历周。
+
+    :return: ``(prev_row, gap)``；没有上期时返回 ``(None, None)``。
+    """
+    for j in range(latest_index - 1, -1, -1):
+        if series[j].get("temperature") is not None:
+            return series[j], latest_index - j
+    return None, None
 
 
 def _summary_item(xiaoqu: dict, row: dict) -> dict:
@@ -144,6 +153,10 @@ def compute_overview(
     grouped: dict[str, list[dict]] = {}
     totals: dict[str, int] = {}
     insufficient: dict[str, int] = {}
+    # city -> district -> 聚合累计（温度、合格数、总数、不足数）。
+    district_stats: dict[str, dict[str, dict]] = {}
+    # city -> 周变化累计：可用配对的和 + 无可用上期的个数。
+    delta_stats: dict[str, dict] = {}
     weeks: list[str] = []
 
     for xiaoqu in xiaoqu_list:
@@ -160,16 +173,36 @@ def compute_overview(
             continue
 
         totals[city_name] = totals.get(city_name, 0) + 1
+        district_name = xiaoqu.get("district") or "未分区"
+        dstat = (
+            district_stats.setdefault(city_name, {})
+            .setdefault(district_name, {"temps": [], "count": 0, "total": 0, "insufficient": 0})
+        )
+        dstat["total"] += 1
         week = last.get("week")
         if week is not None:
             weeks.append(week)
 
-        row = _latest_row(series)
-        if row is None:
+        idx = _latest_index(series)
+        if idx is None:
             # 有数据但温度不足：不参与均温与榜单，只计数（docs/04 §3.2）。
             insufficient[city_name] = insufficient.get(city_name, 0) + 1
+            dstat["insufficient"] += 1
             continue
+        row = series[idx]
         grouped.setdefault(city_name, []).append(_summary_item(xiaoqu, row))
+        dstat["count"] += 1
+        if row.get("temperature") is not None:
+            dstat["temps"].append(row["temperature"])
+
+        # 较上期（上一期有温度的观测）；序号差 > MAX_DELTA_GAP 视为「上期太旧」，
+        # 与「无上期」合并计入 delta_insufficient。
+        dst = delta_stats.setdefault(city_name, {"sums": [], "missing": 0})
+        prev, gap = _prev_row(series, idx)
+        if prev is not None and gap is not None and gap <= MAX_DELTA_GAP:
+            dst["sums"].append(row["temperature"] - prev["temperature"])
+        else:
+            dst["missing"] += 1
 
     cities_out: list[dict] = []
     for city_name in sorted(totals.keys()):
@@ -184,6 +217,27 @@ def compute_overview(
 
         total = totals[city_name]
         n_insufficient = insufficient.get(city_name, 0)
+        dst = delta_stats.get(city_name, {"sums": [], "missing": 0})
+        delta_sums = dst["sums"]
+        delta_missing = dst["missing"]
+        districts_out = []
+        for district_name, dstat in district_stats.get(city_name, {}).items():
+            dtemps = dstat["temps"]
+            dtotal = dstat["total"]
+            districts_out.append({
+                "district": district_name,
+                "temperature": round(sum(dtemps) / len(dtemps), 1) if dtemps else None,
+                "count": dstat["count"],
+                "total": dtotal,
+                "insufficient": dstat["insufficient"],
+                "insufficient_ratio": (
+                    round(dstat["insufficient"] / dtotal, 3) if dtotal else 0.0
+                ),
+            })
+        # 温度降序，null 排最后；同值按区名升序。
+        districts_out.sort(
+            key=lambda d: (d["temperature"] is None, -(d["temperature"] or 0.0), d["district"])
+        )
         cities_out.append(
             {
                 "city": city_name,
@@ -194,6 +248,15 @@ def compute_overview(
                 "insufficient_ratio": (
                     round(n_insufficient / total, 3) if total else 0.0
                 ),
+                "temperature_delta": (
+                    round(sum(delta_sums) / len(delta_sums), 1) if delta_sums else None
+                ),
+                "delta_count": len(delta_sums),
+                "delta_insufficient": delta_missing,
+                "delta_insufficient_ratio": (
+                    round(delta_missing / len(items), 3) if items else 0.0
+                ),
+                "districts": districts_out,
                 "top_hot": _top(items, "temperature", reverse=True),
                 "top_cold": _top(items, "temperature", reverse=False),
                 "top_rising": _top(rising_source, "mom4", reverse=True),

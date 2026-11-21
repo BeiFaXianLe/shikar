@@ -542,6 +542,17 @@
       }
 
       var insuf = Number(data.insufficient || 0);
+      var delta = data.temperature_delta;
+      var deltaText;
+      if (delta === null || delta === undefined) {
+        deltaText = "较上期 无可比数据";
+      } else {
+        deltaText =
+          "较上期 " + (delta > 0 ? "+" : "") + fmtNum(delta, 1) +
+          "（" + (data.delta_count || 0) + " 个小区）";
+      }
+      body.appendChild(el("div", { class: "city-delta", text: deltaText }));
+
       if (insuf > 0) {
         body.appendChild(
           el("div", {
@@ -552,6 +563,32 @@
           })
         );
       }
+
+      var districts = data.districts || [];
+      if (districts.length > 0) {
+        var dh = el("div", { class: "district-heat" }, [
+          el("div", { class: "dh-title", text: "分区温度" }),
+        ]);
+        districts.slice(0, 8).forEach(function (d) {
+          dh.appendChild(
+            el("div", { class: "dh-row" }, [
+              el("span", { class: "dh-name", text: d.district || "未分区" }),
+              el("span", { class: "dh-temp", text: fmtNum(d.temperature, 1) }),
+              el("span", {
+                class: "dh-meta",
+                text: d.insufficient > 0 ? "不足 " + d.insufficient : "",
+              }),
+            ])
+          );
+        });
+        if (districts.length > 8) {
+          dh.appendChild(
+            el("div", { class: "dh-more", text: "共 " + districts.length + " 个区" })
+          );
+        }
+        body.appendChild(dh);
+      }
+
       body.appendChild(
         el("div", { class: "boards" }, [
           board("最热", "hot", data.top_hot),
@@ -1526,6 +1563,26 @@
       ])
     );
 
+    var ps = detail.plate_stats;
+    if (ps && ps.avg_price) {
+      var diffTxt = "";
+      if (ps.diff_pct !== null && ps.diff_pct !== undefined) {
+        var dpct = Math.round(ps.diff_pct * 1000) / 10;
+        diffTxt = "（" + (dpct >= 0 ? "高 " : "低 ") + Math.abs(dpct) + "%）";
+      }
+      var ownTxt = ps.price !== null && ps.price !== undefined
+        ? (ps.price / 10000).toFixed(2) + " 万/㎡"
+        : "—";
+      head.appendChild(
+        el("div", {
+          class: "plate-compare",
+          text:
+            "同板块 " + ps.count + " 个小区均价 " +
+            (ps.avg_price / 10000).toFixed(2) + " 万/㎡ · 本小区 " + ownTxt + diffTxt,
+        })
+      );
+    }
+
     var metrics = el("div", { class: "detail-metrics" });
     if (temp !== null && temp !== undefined) {
       metrics.appendChild(el("div", { class: "metric" }, [
@@ -1698,7 +1755,13 @@
     section.appendChild(el("h2", { text: "信号" }));
 
     if (!signals || signals.length === 0) {
-      section.appendChild(el("div", { class: "signals-empty", text: "暂无信号" }));
+      // 信号检测需要成交量（vol30），当前数据源未提供；功能整体推迟，不展示空时间轴。
+      section.appendChild(
+        el("div", {
+          class: "signals-empty",
+          text: "信号功能需成交量数据，当前数据源未提供，暂不展示",
+        })
+      );
       return section;
     }
 

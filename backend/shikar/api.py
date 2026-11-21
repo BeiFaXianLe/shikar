@@ -493,7 +493,26 @@ def _route(
             rows = storage.list_xiaoqu(conn)
             for row in rows:
                 if row.get("id") == xiaoqu_id:
-                    return 200, row
+                    detail = dict(row)
+                    # 同板块均价对比（文字展示用，不新增端点；单条只读聚合，无写事务）。
+                    stats = storage.plate_price_stats(
+                        conn, detail.get("city"), detail.get("plate")
+                    )
+                    if stats and stats.get("avg_price"):
+                        price = storage.latest_price(conn, xiaoqu_id)
+                        detail["plate_stats"] = {
+                            "plate": detail.get("plate"),
+                            "avg_price": stats["avg_price"],
+                            "count": stats["count"],
+                            "price": price,
+                            "diff_pct": (
+                                round(price / stats["avg_price"] - 1.0, 4)
+                                if price is not None else None
+                            ),
+                        }
+                    else:
+                        detail["plate_stats"] = None
+                    return 200, detail
             return 404, {"error": f"xiaoqu 不存在: {xiaoqu_id}"}
 
         if len(segments) == 2 and segments[0] and segments[1] == "series":
