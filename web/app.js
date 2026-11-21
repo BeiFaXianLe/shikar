@@ -1755,7 +1755,13 @@
     section.appendChild(el("h2", { text: "信号" }));
 
     if (!signals || signals.length === 0) {
-      section.appendChild(el("div", { class: "signals-empty", text: "暂无信号" }));
+      // 信号检测需要成交量（vol30），当前数据源未提供；功能整体推迟，不展示空时间轴。
+      section.appendChild(
+        el("div", {
+          class: "signals-empty",
+          text: "信号功能需成交量数据，当前数据源未提供，暂不展示",
+        })
+      );
       return section;
     }
 
