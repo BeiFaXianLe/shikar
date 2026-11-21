@@ -15,6 +15,7 @@ import http.client
 import json
 import sqlite3
 import threading
+from datetime import date, timedelta
 from typing import Iterator
 
 import pytest
@@ -25,7 +26,18 @@ from shikar.overview import compute_overview, list_districts
 from shikar.pipeline import ingest
 from shikar.sources.base import MetricRecord
 
-WEEKS = 6  # 每小区 6 周数据：mom4 在第 5、6 周（索引 4、5）非空。
+WEEKS = 6  # 每小区 6 期数据：mom4 在第 5、6 期（索引 4、5）非空。
+
+
+def _week_at(i: int, start: date = date(2024, 1, 1), step_days: int = 91) -> str:
+    """第 ``i`` 期（默认 2024-01-01 起每 91 天一期），跨年以满足 12 个月门槛。"""
+    d = start + timedelta(days=step_days * i)
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+WEEKS_LIST = [_week_at(i) for i in range(WEEKS)]
+LAST_WEEK = WEEKS_LIST[-1]
 
 
 # --------------------------------------------------------------------------- #
@@ -53,7 +65,7 @@ def _linear_records(
                 plate="板块",
                 xiaoqu_id="",
                 xiaoqu_name=name,
-                week=f"2024-W{i + 1:02d}",
+                week=_week_at(i),
                 price=base_price + step * i,
                 supply=100 + i,
                 vol30=10 + i,
@@ -117,7 +129,7 @@ def test_empty_db(empty_conn: sqlite3.Connection) -> None:
 def test_week_is_global_max(conn: sqlite3.Connection) -> None:
     """全局 ``week`` 取所有最新行的最大 week（此处为最后一周）。"""
     result = compute_overview(conn)
-    assert result["week"] == "2024-W06"
+    assert result["week"] == LAST_WEEK
 
 
 def test_cities_sorted_ascending(conn: sqlite3.Connection) -> None:
@@ -186,7 +198,7 @@ def test_skips_xiaoqu_without_temperature(conn: sqlite3.Connection) -> None:
         conn,
         {"id": "E|东城|单周E", "city": "北京", "district": "东城", "name": "单周E"},
     )
-    for week in ("2024-W01", "2024-W02"):
+    for week in WEEKS_LIST[:2]:
         storage.upsert_metric(
             conn,
             {"xiaoqu_id": "E|东城|单周E", "week": week, "price": 40000.0,
@@ -196,8 +208,48 @@ def test_skips_xiaoqu_without_temperature(conn: sqlite3.Connection) -> None:
     beijing = next(c for c in result["cities"] if c["city"] == "北京")
     # 单周 E 无 temperature，不参与统计。
     assert beijing["count"] == 2
+    # 但它是「有数据、数据不足」，要计入 total 与 insufficient（docs/04 §3.2）。
+    assert beijing["total"] == 3
+    assert beijing["insufficient"] == 1
+    assert beijing["insufficient_ratio"] == round(1 / 3, 3)
     names = {item["name"] for item in beijing["top_hot"]}
     assert "单周E" not in names
+
+
+def test_overview_excludes_insufficient_from_boards(conn: sqlite3.Connection) -> None:
+    """数据不足小区不进任何榜单，也不计入均温。"""
+    ingest(conn, _linear_records("北京", "东城", "单期F", 50000.0, 1000.0, weeks=1))
+    result = compute_overview(conn, city="北京")
+    beijing = result["cities"][0]
+    assert beijing["count"] == 2
+    assert beijing["total"] == 3
+    assert beijing["insufficient"] == 1
+    listed = {i["name"] for i in (
+        beijing["top_hot"] + beijing["top_cold"]
+        + beijing["top_rising"] + beijing["top_falling"]
+    )}
+    assert "单期F" not in listed
+    # 均温只按两个合格小区计算。
+    temps = []
+    for xq in storage.list_xiaoqu(conn, city="北京"):
+        if xq["name"] == "单期F":
+            continue
+        latest = [r for r in storage.get_metric_series(conn, xq["id"])
+                  if r["temperature"] is not None][-1]
+        temps.append(latest["temperature"])
+    assert beijing["temperature"] == round(sum(temps) / len(temps), 1)
+
+
+def test_overview_all_insufficient_has_null_temperature(empty_conn: sqlite3.Connection) -> None:
+    """全城只有不足小区时：temperature 为 None、榜单为空，但 week 仍给数据周。"""
+    ingest(empty_conn, _linear_records("北京", "东城", "单期G", 50000.0, 1000.0, weeks=1))
+    result = compute_overview(empty_conn)
+    city = result["cities"][0]
+    assert city["temperature"] is None
+    assert city["count"] == 0 and city["total"] == 1 and city["insufficient"] == 1
+    assert city["insufficient_ratio"] == 1.0
+    assert city["top_hot"] == [] and city["top_rising"] == []
+    assert result["week"] == WEEKS_LIST[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -249,11 +301,12 @@ def test_api_overview(live_server: dict) -> None:
     assert status == 200
     assert headers["content-type"] == "application/json; charset=utf-8"
 
-    assert payload["week"] == "2024-W06"
+    assert payload["week"] == LAST_WEEK
     assert [c["city"] for c in payload["cities"]] == ["北京", "天津"]
     for city in payload["cities"]:
         assert set(city) == {
             "city", "temperature", "count",
+                "total", "insufficient", "insufficient_ratio",
             "top_hot", "top_cold", "top_rising", "top_falling",
         }
         assert isinstance(city["temperature"], float)
@@ -377,3 +430,4 @@ def test_api_districts(live_server: dict) -> None:
         {"city": "天津", "district": "和平"},
         {"city": "天津", "district": "河西"},
     ]
+
