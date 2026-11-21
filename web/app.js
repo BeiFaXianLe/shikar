@@ -1517,6 +1517,7 @@
         if (compareNode) appEl.appendChild(compareNode);
         appEl.appendChild(renderSeriesSection(series));
         appEl.appendChild(renderSignalsSection(signals));
+        appEl.appendChild(renderSimilarSection(detail, series));
       })
       .catch(function (err) {
         appEl.innerHTML = "";
@@ -1778,6 +1779,94 @@
       );
     });
     section.appendChild(list);
+    return section;
+  }
+
+  /**
+   * 形态 A：相似小区（docs/32）。
+   *
+   * 纯前端：复用 /api/catalog 现有参数，候选过滤/排序/理由全部在 similar.js 里完成；
+   * 当前小区 dp<2 时降级为「同区 + 同价带」，理由不提温度。
+   */
+  function renderSimilarSection(detail, series) {
+    var section = el("section", { class: "section similar" });
+    section.appendChild(el("h2", { text: "相似小区" }));
+    var body = el("div", { class: "similar-body" });
+    section.appendChild(body);
+
+    var sim = window.ShikarSimilar;
+    function emptyHint() {
+      return el("div", { class: "similar-empty", text: "暂无相似小区" });
+    }
+    if (!sim) {
+      body.appendChild(emptyHint());
+      return section;
+    }
+
+    var ctx = sim.buildContext(detail, series);
+    if (!ctx.city || ctx.price === null || ctx.price === undefined) {
+      body.appendChild(emptyHint());
+      return section;
+    }
+
+    function paint(items, relaxed) {
+      body.innerHTML = "";
+      var picked = sim.recommend(items, ctx, {
+        band: relaxed ? sim.RELAXED_BAND : sim.DEFAULT_BAND,
+        district: ctx.sufficient ? null : ctx.district,
+      });
+      if (!picked.length) {
+        body.appendChild(emptyHint());
+        return;
+      }
+      var list = el("ul", { class: "similar-list" });
+      picked.forEach(function (it) {
+        list.appendChild(
+          el("li", { class: "similar-item" }, [
+            el("a", {
+              class: "similar-name",
+              href: "#/xiaoqu/" + encodeURIComponent(it.id),
+              text: it.name || it.id,
+            }),
+            el("span", {
+              class: "similar-meta",
+              text:
+                "温度 " + fmtNum(it.temperature, 1) + " · " + (it.stage || "—") +
+                " · " + fmtNum(it.latest_price, 0) + " 元/㎡",
+            }),
+            el("span", { class: "similar-reason", text: sim.reason(it, ctx) }),
+          ])
+        );
+      });
+      body.appendChild(list);
+    }
+
+    function load(query, relaxed) {
+      return getJSON("/api/catalog?" + buildQuery(query))
+        .then(function (data) {
+          var items = (data && data.items) || [];
+          var band = relaxed ? sim.RELAXED_BAND : sim.DEFAULT_BAND;
+          var usable = sim.filterCandidates(items, ctx, {
+            band: band,
+            district: ctx.sufficient ? null : ctx.district,
+          });
+          if (usable.length >= sim.MIN_RESULTS || relaxed) {
+            paint(items, relaxed);
+            return;
+          }
+          // 第一档不足 3 条：去掉阶段限制、价带放宽到 ±30% 再试一次。
+          return load(
+            sim.queryFor(ctx, { band: sim.RELAXED_BAND, dropStage: true }),
+            true
+          );
+        })
+        .catch(function () {
+          body.innerHTML = "";
+          body.appendChild(emptyHint());
+        });
+    }
+
+    load(sim.queryFor(ctx, {}), !ctx.sufficient);
     return section;
   }
 
