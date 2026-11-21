@@ -11,6 +11,9 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import os
+import sqlite3
+
+from shikar import overview
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -84,6 +87,65 @@ def test_build_db_has_no_hardcoded_current_week():
         src = f.read()
     assert "2026-W46" not in src, "build_db.py 又写死了当期周"
     assert "current_week" in src, "build_db.py 未使用由数据推导的当期周"
+
+
+def test_dedupe_2026_keeps_multiple_weeks():
+    """去重键必须含 week：同小区 4 个周次不能被折叠成 1 行。"""
+    rows = [
+        {"city": "北京", "xiaoqu_id": "X1", "week": w}
+        for w in ("2025-W05", "2025-W22", "2025-W40", "2026-W47")
+    ]
+    assert len(build_db.dedupe_2026(rows)) == 4
+    # 完全重复的行才丢
+    assert len(build_db.dedupe_2026(rows + rows[:1])) == 4
+
+
+def test_build_db_end_to_end_multi_week_csv(tmp_path, monkeypatch):
+    """端到端：多周 CSV 全部入库，当期周（W47）有温度、榜单非空。
+
+    这是 testWorker 复验发现的缺口：旧去重键 (city, xiaoqu_id) 把 12 行截成 3 行
+    （只剩首周），当期周没有温度、overview 必空。
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    header = "city,district,plate,xiaoqu_id,xiaoqu_name,week,price,supply,built_year,mom1_pct,source"
+    (data / "history2019.csv").write_text(header + "\n", encoding="utf-8-sig")
+
+    # 跨度 ≥365 天、相邻缺口均 ≤365 天，且当期周为 2026-W47（满足 #36 门槛）
+    weeks = ["2025-W05", "2025-W22", "2026-W05", "2026-W47"]
+    lines = [header]
+    for i, name in enumerate(["A小区", "B小区", "C小区"]):
+        for j, w in enumerate(weeks):
+            lines.append(
+                f"北京,朝阳,望京,X{i},{name},{w},{50000 + i * 1000 + j * 500},10,2005,1.0,fang.com"
+            )
+    (data / "fang_2026.csv").write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+    monkeypatch.setattr(build_db, "DATA", str(data))
+    build_db.main()
+
+    conn = sqlite3.connect(str(data / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM xiaoqu_metric_weekly").fetchone()[0]
+        assert n == 12, f"多周行被丢弃，只剩 {n} 行"
+        rows = conn.execute(
+            "SELECT temperature FROM xiaoqu_metric_weekly WHERE week = '2026-W47'"
+        ).fetchall()
+        assert len(rows) == 3
+        assert all(r["temperature"] is not None for r in rows), "当期周温度为空"
+    finally:
+        conn.close()
+
+    ov_conn = sqlite3.connect(str(data / "shikar.db"))
+    ov_conn.row_factory = sqlite3.Row
+    try:
+        ov = overview.compute_overview(ov_conn)
+    finally:
+        ov_conn.close()
+    assert ov["week"] == "2026-W47"
+    assert ov["cities"] and ov["cities"][0]["count"] == 3
+    assert ov["cities"][0]["temperature"] is not None
 
 
 def test_current_week_majority_wins_over_lexicographically_larger_minority():

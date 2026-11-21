@@ -152,18 +152,36 @@ def _current_week(rows):
     return max(counts, key=lambda w: (counts[w], w))
 
 
+def dedupe_2026(rows):
+    """2026 CSV 去重：**同城 + 同小区 + 同周**才算重复。
+
+    早期实现只用 ``(city, xiaoqu_id)``，会把同一小区后续周次全部当成重复丢掉，
+    导致 CSV 永远只剩第一周（与 fetch_fang 的同型缺陷）。
+    """
+    seen = set()
+    out = []
+    for r in rows:
+        key = (r.get("city"), r.get("xiaoqu_id"), (r.get("week") or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def main():
     rows2026 = read_csv("fang_2026.csv")
     rows2019 = read_csv("history2019.csv")
 
-    # 2026 去重（同 city+xiaoqu_id）
-    seen = set(); cur = []
-    for r in rows2026:
-        k = (r["city"], r["xiaoqu_id"])
-        if k in seen:
-            continue
-        seen.add(k); cur.append(r)
-    cur_by_key = {(r["city"], r["xiaoqu_name"].strip()): r for r in cur}
+    # 2026 去重（同 city + xiaoqu_id + week）
+    cur = dedupe_2026(rows2026)
+    current_week = _current_week(cur)
+    # 2019 按「城市 + 小区名」配对到 2026 小区；多周时优先用当期周那行做档案。
+    cur_by_key = {}
+    for r in cur:
+        k = (r["city"], r["xiaoqu_name"].strip())
+        if k not in cur_by_key or (r.get("week") or "").strip() == current_week:
+            cur_by_key[k] = r
 
     xiaoqu = {}   # id -> meta
     metrics = []  # (xid, week, price, supply, mom4)
@@ -258,7 +276,6 @@ def main():
             storage.upsert_xiaoqu(conn, m)
 
         n_metric = 0; n_temp = 0
-        current_week = _current_week(cur)
         for xid, week, price, supply, mom in metrics:
             temp = None; stage = None
             if sufficient(xid) and current_week is not None and week == current_week:
