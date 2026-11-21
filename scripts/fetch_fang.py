@@ -6,7 +6,7 @@
   python scripts/fetch_fang.py --city bj --pages 100 --delay 1.5
   python scripts/fetch_fang.py --city tj --pages 100 --delay 1.5
 """
-import argparse, csv, os, re, sys, time, urllib.request
+import argparse, csv, datetime, os, re, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data", "fang_2026.csv")
@@ -22,6 +22,12 @@ def opener():
     if PROXY:
         return urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
     return urllib.request.build_opener()
+
+
+def _iso_week(d=None):
+    """返回 ISO 8601 周次 "YYYY-Www"（ISO 年 + ISO 周号，跨年周归属 ISO 年）。"""
+    iso = (d or datetime.date.today()).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
 
 
 def get(op, url, ref):
@@ -58,8 +64,26 @@ def load_existing():
     if os.path.exists(OUT):
         with open(OUT, "r", encoding="utf-8-sig", newline="") as f:
             for r in csv.DictReader(f):
-                rows[(r["city"], r["xiaoqu_id"])] = r
+                # 键必须含 week：否则同一小区后续周次的抓取会被当成重复而丢弃，
+                # CSV 永远停在第 1 期，周更数据从未真正累积。
+                rows[(r["city"], r["xiaoqu_id"], r.get("week", ""))] = r
     return rows
+
+
+def merge_rows(rows, items, cname, week):
+    """把一批抓取结果并入 ``rows``（键含 city/xiaoqu_id/week），返回新增行数。
+
+    同一周重跑幂等（同键跳过）；跨周自动追加新行。
+    """
+    added = 0
+    for it in items:
+        key = (cname, it["xiaoqu_id"], week)
+        if key in rows:
+            continue
+        it.update({"city": cname, "week": week, "source": "fang.com"})
+        rows[key] = {k: it.get(k, "") for k in FIELDS}
+        added += 1
+    return added
 
 
 def main():
@@ -68,7 +92,7 @@ def main():
     ap.add_argument("--pages", type=int, default=100)
     ap.add_argument("--delay", type=float, default=1.5)
     a = ap.parse_args()
-    cname = CITIES[a.city]; week = time.strftime("%Y-W%V")
+    cname = CITIES[a.city]; week = _iso_week()
     rows = load_existing(); before = len(rows); added = 0
     op = opener()
     for page in range(1, a.pages + 1):
@@ -80,12 +104,7 @@ def main():
         items = parse(html)
         if not items:
             print(f"page {page} empty/blocked, stop", flush=True); break
-        for it in items:
-            key = (cname, it["xiaoqu_id"])
-            if key in rows:
-                continue
-            it.update({"city": cname, "week": week, "source": "fang.com"})
-            rows[key] = {k: it.get(k, "") for k in FIELDS}; added += 1
+        added += merge_rows(rows, items, cname, week)
         time.sleep(a.delay)
         if page % 20 == 0:
             print(f"{cname} page {page} added={added} total={len(rows)}", flush=True)
