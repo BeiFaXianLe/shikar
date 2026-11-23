@@ -21,6 +21,9 @@ data/shikar.db
 
 data/backups/
 data/shikar.db.fullbak
+# build_db.py 原子替换前的旧库留底（同 fullbak，均为构建产物）
+data/shikar.db.prev
+data/shikar.db.building
 
 
 # 累积的历史成交样本：数据资产，只进私有备份仓库，不进公开代码仓库
