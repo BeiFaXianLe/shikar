@@ -49,6 +49,23 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date '+%H:%M:%S')" "$1" >&2; exit "${2:-2}"; }
 run()  { if [ "$DRY" -eq 1 ]; then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
 
+# 列出发布点（目录名形如 20261123-133330），新的在前。
+# 用 glob 而不是 ls | grep：发布点名字是数字，但别依赖这一点。
+release_ids() {
+  local d name out=()
+  for d in "$RELEASE_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    case "$name" in
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) out+=("$name") ;;
+    esac
+  done
+  if [ "${#out[@]}" -gt 0 ]; then
+    printf '%s\n' "${out[@]}" | sort -r
+  fi
+  return 0
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref)        REF=${2:-}; shift 2 ;;
@@ -89,7 +106,7 @@ if [ "$MODE" = list ]; then
         [ -n "$ref" ] || ref="?"
       fi
       printf '  %s  commit=%s  ref=%s\n' "$d" "$commit" "$ref"
-    done < <(ls -1 "$RELEASE_ROOT" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r)
+    done < <(release_ids)
   else
     log "  （暂无发布点，第一次成功发布会生成）"
   fi
@@ -155,7 +172,7 @@ smoke_check() {
 
 if [ "$MODE" = rollback ]; then
   if [ "$ROLLBACK_ID" = latest ]; then
-    ROLLBACK_ID=$(ls -1 "$RELEASE_ROOT" 2>/dev/null | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r | head -1)
+    ROLLBACK_ID=$(release_ids | head -1)
     [ -n "$ROLLBACK_ID" ] || die "没有可回滚的发布点"
   fi
   TARBALL="$RELEASE_ROOT/$ROLLBACK_ID/code.tar.gz"
@@ -335,7 +352,7 @@ if [ "$DRY" -eq 0 ]; then
 fi
 
 # 只提醒，不自动删（磁盘只剩 ~8.9G，删备份是人的决定）
-COUNT=$(ls -1 "$RELEASE_ROOT" 2>/dev/null | grep -cE '^[0-9]{8}-[0-9]{6}$' || true)
+COUNT=$(release_ids | grep -c . || true)
 if [ "${COUNT:-0}" -gt "$KEEP_RELEASES" ]; then
   warn "发布点已有 $COUNT 个（阈值 $KEEP_RELEASES），磁盘可用 $(df -h "$APP_DIR" | awk 'NR==2{print $4}')。清理请人工确认后删 $RELEASE_ROOT 下的旧目录。"
 fi
