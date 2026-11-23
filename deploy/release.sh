@@ -236,9 +236,22 @@ TARGET_SHORT=$(printf '%s' "$TARGET" | cut -c1-7)
 TARGET_SUBJECT=$(git -C "$APP_DIR" log -1 --format='%s' "$TARGET" 2>/dev/null)
 log "目标提交：$TARGET_SHORT  $TARGET_SUBJECT"
 
+# 把 HEAD 与 index 对齐到发布的提交，但**不动工作区**（reset --mixed）。
+# 为什么：代码是用 rsync 同步的，HEAD 会停在旧提交，`git status` 就会把「刚发布的
+# 文件」报成幽灵改动——2026-11-23 那次误判「代码漂移」就是这么来的。
+# 为什么不用 --hard：data/ 也受版本控制且每周被 refresh.sh 写入，--hard 会把周更新的
+# CSV 回退掉；--mixed 只动 HEAD 与 index，不碰任何文件。
+align_git_head() {
+  [ "$DRY" -eq 1 ] && return 0
+  git -C "$APP_DIR" reset --mixed "$1" >/dev/null 2>&1 || \
+    warn "对齐 git HEAD 失败（不影响服务，但 git status 可能有幽灵改动）"
+  return 0
+}
+
 # 幂等：同一个提交已经发布过 → 不重复搬文件，只做健康检查
 if [ -f "$MARKER" ] && grep -q "COMMIT=$TARGET" "$MARKER" 2>/dev/null; then
   log "代码已是 $TARGET_SHORT（幂等跳过同步）"
+  align_git_head "$TARGET"
   if [ "$DO_RESTART" -eq 1 ]; then
     if wait_healthy && smoke_check; then log "服务健康，无需操作"; exit 0; fi
     warn "代码是最新的，但服务不健康 —— 尝试重启一次"
@@ -346,6 +359,8 @@ fi
 if [ "$DRY" -eq 0 ]; then
   printf 'COMMIT=%s\nREF=%s\nRELEASE_ID=%s\nAT=%s\n' \
     "$TARGET" "$REF" "$RELEASE_ID" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$MARKER"
+  # 把 HEAD 与 index 对齐到本次发布的提交（原因见 align_git_head）
+  align_git_head "$TARGET"
   printf '%s  deploy  %s -> %s (%s)  ref=%s  by=%s\n' \
     "$(date '+%F %T')" "$PREV_HEAD" "$TARGET_SHORT" "$TARGET_SUBJECT" "$REF" "${SUDO_USER:-${USER:-?}}" \
     >> "$RELEASE_ROOT/history.log"
