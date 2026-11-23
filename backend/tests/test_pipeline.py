@@ -197,6 +197,46 @@ def test_sufficient_community_keeps_temperature(conn):
     assert all(r["stage"] in VALID_STAGES for r in rows)
 
 
+def test_recompute_after_ingest_history_keeps_null(conn):
+    """生产路径回归：ingest_history 写入 2 期后，recompute 不得补出 50 分温度。
+
+    事故形态：build_db 已按门槛置空，refresh.sh 随后跑 recompute_metrics，
+    若 recompute 没有同一门槛，会把全库重新填成中性 50。
+    """
+    storage.upsert_xiaoqu(conn, {
+        "id": "北京|朝阳|历史两期", "city": "北京", "district": "朝阳", "name": "历史两期",
+    })
+    for week, price in (("2019-02", 60000.0), ("2026-W46", 49480.0)):
+        storage.upsert_metric(conn, {
+            "xiaoqu_id": "北京|朝阳|历史两期", "week": week, "price": price,
+            "temperature": None, "stage": None,
+        })
+    recompute(conn)
+    recompute(conn)  # 幂等：再跑一次结果不变
+    rows = storage.get_metric_series(conn, "北京|朝阳|历史两期")
+    assert len(rows) == 2
+    assert all(r["temperature"] is None for r in rows)
+    assert all(r["stage"] is None for r in rows)
+
+
+def test_recompute_idempotent_for_sufficient_series(conn):
+    """合格序列：两次 recompute 结果一致且非 NULL。"""
+    storage.upsert_xiaoqu(conn, {
+        "id": "北京|西城|合格F", "city": "北京", "district": "西城", "name": "合格F",
+    })
+    for i in range(5):
+        storage.upsert_metric(conn, {
+            "xiaoqu_id": "北京|西城|合格F", "week": _week_at(i, step_days=120),
+            "price": 50000.0 + i * 700, "supply": 100.0, "vol30": 10.0,
+        })
+    recompute(conn)
+    first = [(r["week"], r["temperature"], r["stage"]) for r in storage.get_metric_series(conn, "北京|西城|合格F")]
+    recompute(conn)
+    second = [(r["week"], r["temperature"], r["stage"]) for r in storage.get_metric_series(conn, "北京|西城|合格F")]
+    assert first == second
+    assert all(t is not None for _, t, _ in first)
+
+
 def test_ingest_idempotent(conn):
     """重复 ingest 同一批记录行数不增。"""
     records = _make_records("北京", "朝阳", "望京A", weeks=8)

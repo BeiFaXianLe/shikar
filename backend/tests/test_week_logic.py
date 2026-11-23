@@ -252,3 +252,16 @@ def test_whitespace_in_week_does_not_block_temperature(monkeypatch, tmp_path):
         _rows2026(week=" 2026-W46 "), _rows2019(),
     )
     assert temps["2026-W46"] is not None
+
+
+def test_build_db_uses_pipeline_gate():
+    """门槛只有一份实现：build_db 必须引用 pipeline.is_sufficient，不得自带副本。"""
+    from shikar import pipeline
+
+    assert build_db.pipeline is pipeline
+    assert build_db.pipeline.is_sufficient is pipeline.is_sufficient
+    with open(build_db.__file__, "r", encoding="utf-8") as fh:
+        src = fh.read()
+    assert "def parse_week(" not in src, "build_db 又复制了一份周次解析"
+    assert "def sufficient(" not in src, "build_db 又复制了一份充分性门槛"
+    assert "pipeline.is_sufficient(" in src
