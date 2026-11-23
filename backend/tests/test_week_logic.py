@@ -265,3 +265,52 @@ def test_build_db_uses_pipeline_gate():
     assert "def parse_week(" not in src, "build_db 又复制了一份周次解析"
     assert "def sufficient(" not in src, "build_db 又复制了一份充分性门槛"
     assert "pipeline.is_sufficient(" in src
+
+
+def test_build_db_and_recompute_agree_on_same_data(monkeypatch, tmp_path):
+    """交叉对照：同一份数据，build_db 与 pipeline.recompute 的合格判定必须一致。
+
+    只要有人把门槛拆成两份、或改了一处，这里就会红：先由 build_db 建库，
+    再用 recompute 在同一库上重算，判定（是否有温度）必须完全相同。
+    """
+    import sqlite3
+
+    from shikar import pipeline
+
+    def row(xid, name, week):
+        return {
+            "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
+            "xiaoqu_name": name, "week": week, "price": "60000", "supply": "100",
+            "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
+        }
+
+    rows2026 = [row("S1", "合格小区", w)
+                for w in ("2025-W05", "2025-W22", "2026-W05", "2026-W47")]
+    rows2026 += [row("S2", "不足小区", w) for w in ("2026-W05", "2026-W47")]
+
+    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
+    monkeypatch.setattr(
+        build_db, "read_csv",
+        lambda name: rows2026 if name == "fang_2026.csv" else [],
+    )
+    build_db.main()
+
+    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        def verdicts():
+            per: dict[str, list] = {}
+            for r in conn.execute(
+                "SELECT xiaoqu_id, temperature FROM xiaoqu_metric_weekly"
+            ):
+                per.setdefault(r["xiaoqu_id"], []).append(r["temperature"])
+            return {k: any(t is not None for t in v) for k, v in per.items()}
+
+        before = verdicts()
+        assert before == {"北京|S1": True, "北京|S2": False}, before
+
+        pipeline.recompute(conn)
+        after = verdicts()
+        assert after == before, f"recompute 与 build_db 判定不一致：build_db={before} recompute={after}"
+    finally:
+        conn.close()
