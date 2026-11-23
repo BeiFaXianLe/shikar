@@ -314,3 +314,42 @@ def test_build_db_and_recompute_agree_on_same_data(monkeypatch, tmp_path):
         assert after == before, f"recompute 与 build_db 判定不一致：build_db={before} recompute={after}"
     finally:
         conn.close()
+
+
+def test_cross_check_detects_divergent_thresholds(monkeypatch, tmp_path):
+    """交叉对照的灵敏度：同一库上把 recompute 的门槛调严，判定必须翻转。
+
+    这不是产品行为，而是证明「两条路径一旦参数分叉，交叉对照能抓到」。
+    数据为 3 期、跨度 378 天：默认门槛（≥3 期）合格；recompute 传 min_periods=4
+    后应变为不合格，于是「build_db 有温度 / recompute 无温度」的分叉会被暴露。
+    """
+    import sqlite3
+
+    from shikar import pipeline
+
+    rows = [{
+        "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": "T1",
+        "xiaoqu_name": "三期小区", "week": w, "price": "60000", "supply": "100",
+        "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
+    } for w in ("2025-W05", "2025-W30", "2026-W07")]
+
+    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
+    monkeypatch.setattr(
+        build_db, "read_csv",
+        lambda name: rows if name == "fang_2026.csv" else [],
+    )
+    build_db.main()
+
+    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        def has_temp() -> bool:
+            return conn.execute(
+                "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
+            ).fetchone()[0] > 0
+
+        assert has_temp() is True, "默认门槛下 3 期/378 天应合格"
+        pipeline.recompute(conn, min_periods=4)
+        assert has_temp() is False, "更严门槛下应判不合格；交叉对照未能发现分叉"
+    finally:
+        conn.close()
