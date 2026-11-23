@@ -564,6 +564,37 @@
         );
       }
 
+      // 读数层：门槛不足不给温度与趋势，但真实读数不该跟着丢掉（docs/04 §0.4）。
+      // 标题写死「不构成趋势判断」，避免读者把中位数当成温度结论。
+      var readings = data.readings;
+      if (readings && Number(readings.with_price) > 0) {
+        var rparts = [];
+        rparts.push(
+          "样本 " + readings.with_price + "/" +
+          (readings.total || readings.with_price) + " 个小区"
+        );
+        if (readings.median_price !== null && readings.median_price !== undefined) {
+          rparts.push("最新价中位数 " + fmtNum(readings.median_price, 0) + " 元/㎡");
+        }
+        if (
+          Number(readings.with_mom) > 0 &&
+          readings.median_mom !== null && readings.median_mom !== undefined
+        ) {
+          rparts.push(
+            "环比中位数 " + fmtSigned(Number(readings.median_mom) * 100, 2) +
+            "%（" + readings.with_mom + " 个小区可比）"
+          );
+        } else {
+          rparts.push("暂无可比环比");
+        }
+        body.appendChild(
+          el("div", { class: "city-readings" }, [
+            el("div", { class: "cr-title", text: "读数层 · 仅读数，不构成趋势判断" }),
+            el("div", { class: "cr-body", text: rparts.join(" · ") }),
+          ])
+        );
+      }
+
       var districts = data.districts || [];
       if (districts.length > 0) {
         var dh = el("div", { class: "district-heat" }, [

@@ -127,6 +127,12 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   await sleep(1000);
   out.chipsAfterClear=await ev(`[].map.call(document.querySelectorAll('.fc-chip'),b=>b.textContent)`);
   out.hashAfterClear=await ev(`location.hash`);
+  // 首页读数层：门槛不足时温度留空，但仍给真实读数（docs/04 §0.4）
+  await send('Page.navigate',{url:`http://127.0.0.1:${BASE_PORT}/`});
+  await sleep(1800);
+  out.gaugeLabel=await ev(`(function(){var e=document.querySelector('.gauge-temp .label');return e?e.textContent:'none';})()`);
+  out.readingsTitle=await ev(`(function(){var e=document.querySelector('.city-readings .cr-title');return e?e.textContent:'none';})()`);
+  out.readingsBody=await ev(`(function(){var e=document.querySelector('.city-readings .cr-body');return e?e.textContent:'none';})()`);
   console.log(JSON.stringify(out));
   process.exit(0);
 })().catch(e=>{console.log(JSON.stringify({err:String(e&&e.message||e)}));process.exit(0);});
@@ -222,3 +228,19 @@ def test_frontend_clear_period(browser_env):
     assert any("期次" in c for c in out["chipsWithPeriod"]), out["chipsWithPeriod"]
     assert not any("期次" in c for c in out["chipsAfterClear"]), out["chipsAfterClear"]
     assert "price_week" not in (out.get("hashAfterClear") or ""), out.get("hashAfterClear")
+
+
+def test_frontend_home_readings_layer(browser_env):
+    """首页读数层：温度不足时不留空白，给出样本数、最新价中位数并声明「不构成趋势判断」。
+
+    种子数据里两个小区都有价格（2019-02 与 2026-W46）但没有温度，因此
+    `count=0`、`temperature=null`，而读数层应为「样本 2/2」、中位数 60500。
+    """
+    out = _run_node_harness(browser_env["cdp_port"], browser_env["base_port"])
+    assert "err" not in out, out
+    assert "数据不足" in out["gaugeLabel"], out["gaugeLabel"]
+    assert out["readingsTitle"] == "读数层 · 仅读数，不构成趋势判断", out["readingsTitle"]
+    body = out["readingsBody"]
+    assert "样本 2/2 个小区" in body, body
+    assert "60500" in body, body                      # (60000+61000)/2
+    assert "暂无可比环比" in body, body                # 种子里 mom4 全为空
