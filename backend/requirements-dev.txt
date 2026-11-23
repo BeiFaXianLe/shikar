@@ -1,0 +1,9 @@
+# 测试/工具链依赖（运行时零第三方依赖，只用 Python 标准库）
+#
+# backend/ 与 scripts/ 的运行时依赖为「无」：http.server + sqlite3 + urllib 全在标准库。
+# 这份文件只装「跑测试 + OSM 导入脚本」需要的东西，CI 与本地用它。
+#
+# osmium（pyosmium）仅被 scripts/osm_poi.py 及 backend/tests/test_osm_poi.py 使用；
+# 缺它时那 2 个用例会 ModuleNotFoundError，scripts/verify.sh 会显式跳过并告警，不静默。
+pytest>=8,<10
+osmium>=3.6
