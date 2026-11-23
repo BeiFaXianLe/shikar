@@ -55,7 +55,7 @@ jobs:
           shellcheck --version
           # 只查本 PR 引入的脚本。deploy/refresh.sh 是既有生产数据脚本，
           # 它有个既有的 SC2034（未使用的 TS），单独一次小改动修理，不混进本 PR。
-          shellcheck -S warning deploy/release.sh deploy/set-gh-token.sh scripts/verify.sh
+          shellcheck -S warning deploy/release.sh deploy/set-gh-token.sh deploy/install-timers.sh scripts/verify.sh
 
   deps-audit:
     name: 依赖漏洞体检（仅定时/手动，不阻断合并）

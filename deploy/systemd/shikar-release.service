@@ -1,0 +1,32 @@
+# shikar 每日版本对齐（由 shikar-release.timer 拉起）：把服务器代码对齐到 origin/main。
+#
+# 只搬「已经合并」的代码：不合并、不改配置、不动 data/ 与 .secrets/。
+# 真正的活全部交给现成的 deploy/release.sh（幂等；发布点备份；服务端 pytest；
+# /api/health 健康检查；/api/overview 冒烟；失败自动回滚），这里只补两件
+# release.sh 在无人值守下缺的护栏：
+#
+#   1. ExecStartPre —— 先强制 fetch。
+#      release.sh 自己 fetch 失败时会退回「本地已有引用」，那会「报成功但没对齐」。
+#      无人值守不能接受这种静默，所以拉不到远端就整单失败、宁可不发也不发旧版。
+#
+#   2. ExecCondition —— 抓数（shikar-refresh）正在跑就跳过今天这次。
+#      两条线都会 `systemctl restart shikar`，而且 release.sh 的 `rsync --delete deploy/`
+#      会替换正在执行的 refresh.sh（bash 是边读边执行的）。跳过时 systemd 把结果记为
+#      "condition failed"，不算失败、也不误动线上，journal 里有记录。
+#
+# 不加 NoNewPrivileges=true：release.sh 要用 `sudo -n systemctl restart shikar`。
+[Unit]
+Description=Daily shikar code alignment (origin/main -> /opt/shikar)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/shikar
+# fetch 45s×3 重试 + 服务端 pytest 约 70s + 健康检查最多 40s，30 分钟足够。
+TimeoutStartSec=1800
+ExecStartPre=/usr/bin/git -C /opt/shikar -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch --prune origin
+ExecCondition=/bin/sh -c 's=$(systemctl show -p ActiveState --value shikar-refresh.service); case "$s" in active|activating|reloading|deactivating) exit 1 ;; *) exit 0 ;; esac'
+ExecStart=/opt/shikar/deploy/release.sh --yes
