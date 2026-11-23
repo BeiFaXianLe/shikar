@@ -77,6 +77,19 @@ jobs:
           printf '%s\n' "${PR_BODY:-}" > "$RUNNER_TEMP/pr_body.md"
           printf '%s\n' "$PR_AUTHOR" > "$RUNNER_TEMP/pr_author.txt"
 
+      - name: 自检：门禁自己先证明「能过」也能拦
+        # 门禁最怕的不是拦不住，而是永远红：那会让所有 PR 永久无法合并。
+        # 所以每次都用固定样本跑一遍：填齐要 PASS、缺栏位要 FAIL。
+        run: |
+          set -e
+          bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-filled.md --author fixture-author
+          echo "自检 1/2 通过：填齐的正文判 PASS"
+          if bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-missing.md --author fixture-author; then
+            echo "::error::自检失败：缺栏位的正文竟然也判 PASS"
+            exit 1
+          fi
+          echo "自检 2/2 通过：缺栏位的正文判 FAIL（预期返回 1）"
+
       - name: 校验「审核三段式」与「独立验证三态」
         run: |
           bash scripts/check_pr_review.sh \
