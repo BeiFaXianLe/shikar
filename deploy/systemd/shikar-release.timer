@@ -1,0 +1,18 @@
+# shikar 应用版本对齐：每天 05:20 把 /opt/shikar 对齐到 origin/main（只搬已合并的代码）。
+#
+# 时间怎么定的：
+#   - 周一抓数窗口是 04:30–04:50（04:30 + 随机 0–15 分钟延迟，单次约 12 分钟），
+#     05:20 留出 30 分钟余量；若抓数还在跑，service 的 ExecCondition 会跳过当天这次。
+#   - 避开同机已有的定时器：apt-daily-upgrade 约 06:03、man-db 03:32、logrotate 00:46。
+#   - 不设 RandomizedDelaySec：发布要可预测、方便对着 journal 排查。
+#
+# 唯一事实来源：本文件（deploy/systemd/）。
+[Unit]
+Description=Daily shikar code alignment (origin/main -> /opt/shikar)
+
+[Timer]
+OnCalendar=*-*-* 05:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

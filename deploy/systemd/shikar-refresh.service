@@ -1,0 +1,25 @@
+# shikar 每周数据采集（由 shikar-refresh.timer 拉起）。
+# 不要手动 `systemctl start shikar-refresh.service`：采集会向不可再生的
+# data/fang_preview_all.csv 追加数据，属不可逆动作，要人点头（docs/发布与回滚.md §5）。
+#
+# 两条别改的约束：
+#   1. **不加 NoNewPrivileges=true / PrivateTmp=true**：deploy/refresh.sh 内部要
+#      `sudo -n systemctl restart shikar`，加了 NoNewPrivileges 会直接废掉 sudo。
+#      这里与 shikar.service 的加固策略刻意不同（backend/tests/test_deploy_units.py 有锁）。
+#   2. refresh.sh 里每个失败分支都是 `|| echo`，脚本几乎总是 exit 0 ——
+#      systemd 的 status=0 **不代表数据成功**。真正的成功信号是 journal 里的
+#      `refresh done` / `DONE … 新增 N 行` / `推送完成`，见 docs/48。
+[Unit]
+Description=shikar weekly fetch + rebuild DB
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/shikar
+# 实测单次 11–12 分钟，取约 10 倍。要防的不是「慢」，而是「抓取卡死 → unit 一直
+# activating → 下周一 timer 到点发现 unit 仍 active，于是被静默跳过一整周」。
+TimeoutStartSec=7200
+ExecStart=/opt/shikar/deploy/refresh.sh

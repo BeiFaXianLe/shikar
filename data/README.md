@@ -61,3 +61,9 @@ python scripts/recompute_metrics.py --db data\shikar.db
 
 > 去重键为「同城 + 小区 + 周」，因此**每周重跑会新增当期周的行**，而不是覆盖上一周。
 > 数据仅公开聚合指标（均价/在售/建成年/环比），不含房源明细、图片与个人信息；仅供参考，非投资建议。
+
+## 定时任务（服务器）
+
+服务器上跑两条：**抓数每周一 04:30**（防限流）、**代码对齐每天 05:20**（只搬已合并的 `origin/main`）。
+单元源文件在 `deploy/systemd/`，装/卸/查用 `bash deploy/install-timers.sh status|diff|install|uninstall`；
+安装、失败判定、停用与证据见 [`docs/48-定时任务运维手册`](../docs/48-定时任务运维手册（抓数每周+版本对齐每日）.md)。

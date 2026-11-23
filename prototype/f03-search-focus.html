@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#101820" />
+<title>F-03 原型 · 搜索框输入不再丢焦点</title>
+<link rel="stylesheet" href="../web/styles.css" />
+<style>
+  /* 仅本原型新增 */
+  .proto-switch {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 12px 16px; margin: 0 0 18px;
+    background: rgba(210, 170, 109, 0.08);
+    border: 1px solid rgba(210, 170, 109, 0.22);
+    border-radius: var(--r-sm);
+    font-size: 13px; color: var(--ink-soft);
+  }
+  .proto-switch b { color: var(--gold); font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-pill); overflow: hidden; }
+  .seg button {
+    font-family: var(--sans); font-size: 13px; padding: 6px 16px; cursor: pointer;
+    background: transparent; border: none; color: var(--ink-soft);
+  }
+  .seg button.on { background: var(--gold); color: #101820; font-weight: 600; }
+  .probe {
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+    padding: 8px 0 0;
+  }
+  .probe .ok { color: #7fc4b0; }
+  .probe .bad { color: var(--hot); }
+  .proto-note {
+    margin: 22px 0 0; padding: 12px 16px; font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-soft); background: rgba(210, 170, 109, 0.07);
+    border-left: 2px solid var(--gold); border-radius: var(--r-sm);
+  }
+  .proto-note b { color: var(--gold); font-weight: 600; }
+  .proto-note code { font-family: var(--mono); font-size: 12px; color: var(--ivory); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/">shikar · 京津小区行情观测</a>
+    <span class="week">F-03 原型 · 假数据</span>
+  </div>
+  <nav class="mainnav">
+    <a href="#/">总览</a>
+    <a href="#/schools">学校</a>
+  </nav>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer"><span>原型 · 数据均为假数据</span></footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var DATA = {
+    school: [
+      { name: "中关村第一小学", district: "海淀", grade: "重点", n: 42 },
+      { name: "中关村第二小学", district: "海淀", grade: "重点", n: 38 },
+      { name: "中关村中学", district: "海淀", grade: "普通", n: 51 },
+      { name: "朝阳实验小学", district: "朝阳", grade: "重点", n: 33 },
+      { name: "史家胡同小学", district: "东城", grade: "重点", n: 29 },
+      { name: "北京第二实验小学", district: "西城", grade: "重点", n: 47 }
+    ],
+    hospital: [
+      { name: "北京协和医院", district: "东城", grade: "三甲", n: 120 },
+      { name: "中日友好医院", district: "朝阳", grade: "三甲", n: 96 },
+      { name: "北京大学第三医院", district: "海淀", grade: "三甲", n: 88 },
+      { name: "朝阳医院", district: "朝阳", grade: "三甲", n: 74 },
+      { name: "天坛医院", district: "丰台", grade: "三甲", n: 61 }
+    ],
+    hsr: [
+      { name: "北京南站", district: "丰台", grade: "", n: 300 },
+      { name: "北京西站", district: "丰台", grade: "", n: 285 },
+      { name: "北京站", district: "东城", grade: "", n: 210 },
+      { name: "清河站", district: "海淀", grade: "", n: 96 },
+      { name: "天津西站", district: "红桥", grade: "", n: 180 }
+    ]
+  };
+
+  var app = document.getElementById("app");
+  var mode = "new";        // "new" = 修复后（原地更新）；"old" = 复现旧行为（整页重绘）
+  var type = "school";
+  var q = "";
+  var probe = { focus: null, renders: 0 };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function filtered() {
+    var k = q.trim().toLowerCase();
+    if (!k) return DATA[type];
+    return DATA[type].filter(function (it) {
+      return (it.name + " " + it.district).toLowerCase().indexOf(k) >= 0;
+    });
+  }
+
+  function listHtml() {
+    var items = filtered();
+    if (!items.length) return '<div class="empty">没有匹配「' + esc(q) + '」的条目</div>';
+    return items.map(function (it) {
+      return '<div class="poi-row">' +
+        '<div class="poi-main">' +
+          '<div class="poi-name">' + esc(it.name) + '</div>' +
+          '<div class="poi-meta">' + esc(it.district) + (it.grade ? " · " + esc(it.grade) : "") + '</div>' +
+        '</div>' +
+        '<div class="poi-count">' + it.n + ' 个周边小区</div>' +
+      '</div>';
+    }).join("");
+  }
+
+  function shellHtml() {
+    return '<div class="page-head"><h1>' + (type === "school" ? "学校" : type === "hospital" ? "医院" : "高铁站") + '</h1></div>' +
+      '<div class="poi-bar">' +
+        '<select class="district-select" aria-label="城市">' +
+          '<option>京津全部</option><option>北京</option><option>天津</option>' +
+        '</select>' +
+        '<input class="poi-search" type="search" id="q" placeholder="搜索名称或地址…" ' +
+          'aria-label="搜索" value="' + esc(q) + '" />' +
+      '</div>' +
+      '<div id="hint"></div>' +
+      '<div class="poi-list" id="list">' + listHtml() + '</div>';
+  }
+
+  function hintHtml() {
+    return q ? '<div class="poi-query-hint"><span>搜索：' + esc(q) + '</span>' +
+      '<button class="poi-tab" type="button" id="clearQ">清空</button></div>' : "";
+  }
+
+  function paintProbe() {
+    var el = document.getElementById("probe");
+    if (!el) return;
+    var f = probe.focus;
+    el.innerHTML =
+      '<span>输入框焦点：' +
+        (f === null ? "—" : (f ? '<span class="ok">保持 ✔</span>' : '<span class="bad">丢失 ✘</span>')) +
+      '</span>' +
+      '<span>整页重绘次数：' + probe.renders + '</span>' +
+      '<span>当前值：' + esc(q || "（空）") + '</span>';
+  }
+
+  /** 新行为：只更新列表与提示，输入框节点原地保留。 */
+  function updateInPlace() {
+    probe.renders += 0;                      // 不整页重绘
+    document.getElementById("hint").innerHTML = hintHtml();
+    document.getElementById("list").innerHTML = listHtml();
+    bindClear();
+    probe.focus = document.activeElement === document.getElementById("q");
+    paintProbe();
+  }
+
+  /** 旧行为：整页重建，输入框被销毁重建 → 焦点丢失。 */
+  function rerenderWhole() {
+    probe.renders += 1;
+    q = document.getElementById("q").value;
+    var host = document.getElementById("view");
+    host.innerHTML = shellHtml();
+    bindInput();
+    bindClear();
+    probe.focus = document.activeElement === document.getElementById("q");
+    paintProbe();
+  }
+
+  var timer = null;
+  function bindInput() {
+    var input = document.getElementById("q");
+    if (!input) return;
+    input.addEventListener("input", function () {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        q = input.value;
+        if (mode === "new") updateInPlace(); else rerenderWhole();
+      }, 300);
+    });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        if (timer) clearTimeout(timer);
+        q = input.value;
+        if (mode === "new") updateInPlace(); else rerenderWhole();
+      } else if (e.key === "Escape") {
+        input.value = "";
+        if (timer) clearTimeout(timer);
+        q = "";
+        if (mode === "new") updateInPlace(); else rerenderWhole();
+      }
+    });
+    if (mode === "new") input.focus();
+  }
+
+  function bindClear() {
+    var b = document.getElementById("clearQ");
+    if (!b) return;
+    b.addEventListener("click", function () {
+      q = "";
+      var input = document.getElementById("q");
+      if (input) input.value = "";
+      if (mode === "new") { updateInPlace(); input && input.focus(); }
+      else rerenderWhole();
+    });
+  }
+
+  function render() {
+    probe.renders = 0;
+    probe.focus = null;
+    app.innerHTML =
+      '<div class="proto-switch">' +
+        '<b>F-03 · 搜索框丢焦点</b>' +
+        '<span class="seg">' +
+          '<button type="button" data-mode="old">旧行为：整页重绘</button>' +
+          '<button type="button" data-mode="new">修复后：原地更新</button>' +
+        '</span>' +
+        '<span>在框里连续打字，看下面探针的焦点状态。</span>' +
+      '</div>' +
+      '<div class="probe" id="probe"></div>' +
+      '<div id="view">' + shellHtml() + '</div>' +
+      noteBlock();
+
+    app.querySelectorAll("[data-mode]").forEach(function (b) {
+      if (b.getAttribute("data-mode") === mode) b.classList.add("on");
+      b.addEventListener("click", function () {
+        mode = b.getAttribute("data-mode");
+        q = "";
+        render();
+      });
+    });
+    bindInput();
+    bindClear();
+    paintProbe();
+  }
+
+  function noteBlock() {
+    return '<p class="proto-note">' +
+      '<b>根因</b>：<code>renderPoiMenu</code> 每次防抖触发都执行 <code>appEl.innerHTML = ""</code> 整页重建，' +
+      '输入框节点被销毁重建，浏览器焦点随之回到 <code>body</code>——所以刚输入一个字就跳走。' +
+      '<b>修法</b>：搜索框与筛选条只建一次，输入变化时只刷新 <code>#list</code> 与提示行，不碰输入框节点；' +
+      '顺带保留光标位置（<code>selectionStart</code>）。学校 / 医院 / 高铁站三处共用同一段逻辑，改一处即可。' +
+      '</p>';
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

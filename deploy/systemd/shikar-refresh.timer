@@ -1,0 +1,20 @@
+# shikar 数据抓数：每周一次（周一 04:30）。
+# 为什么不是每天：m.fang.com 每城 100 页快照 + 京津各 300/200 个小区详情页，
+# 一周一轮已经接近「低频、限量」的上限；每天跑等于 7 倍抓取量，限流不可控。
+#
+# 注意：04:30 是**配置值**；`systemctl list-timers` 的 NEXT 是 04:30 + RandomizedDelaySec
+# 的随机值（0–15 分钟），每次都不一样。历史文档里出现过「04:44」，那是某周 NEXT 的观测值，
+# 不是配置（见 docs/48）。
+#
+# 唯一事实来源：本文件（deploy/systemd/）。服务器 /etc/systemd/system/ 是部署产物，
+# 由 deploy/install-timers.sh 按本文件安装。
+[Unit]
+Description=Weekly shikar data refresh
+
+[Timer]
+OnCalendar=Mon 04:30
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

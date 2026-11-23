@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#101820" />
+<title>F-01 原型 · 首页直接搜索小区</title>
+<!-- 直接复用线上样式，不复制粘贴、不改 web/ 下任何文件 -->
+<link rel="stylesheet" href="../web/styles.css" />
+<style>
+  /* 仅本原型新增：首页搜索框。颜色/圆角/描边全部取自既有变量。 */
+  .hero-search { display: flex; gap: 10px; margin-top: 26px; max-width: 560px; }
+  .hero-search input {
+    flex: 1 1 auto; min-width: 0;
+    background: rgba(245, 239, 227, 0.04);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-pill);
+    color: var(--ivory);
+    font-family: var(--sans); font-size: 15px;
+    padding: 12px 20px;
+    -webkit-appearance: none; appearance: none;
+  }
+  .hero-search input::placeholder { color: var(--ink-faint); opacity: 1; }
+  .hero-search input:focus { outline: 2px solid var(--gold); outline-offset: 2px; border-color: var(--gold); }
+  .hero-search button {
+    flex: 0 0 auto;
+    font-family: var(--sans); font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+    color: #101820; background: var(--gold); border: 1px solid var(--gold);
+    border-radius: var(--r-pill); padding: 12px 22px; cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  .hero-search button:hover { background: var(--gold-hi); border-color: var(--gold-hi); }
+  @media (max-width: 720px) {
+    .hero-search { margin-top: 20px; max-width: none; }
+    .hero-search input { font-size: 16px; min-height: 46px; padding: 10px 18px; }
+    .hero-search button { min-height: 46px; padding: 10px 18px; }
+  }
+  .proto-note {
+    margin: 20px 0 0; padding: 12px 16px; font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-soft); background: rgba(210, 170, 109, 0.07);
+    border-left: 2px solid var(--gold); border-radius: var(--r-sm);
+  }
+  .proto-note b { color: var(--gold); font-weight: 600; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/">shikar · 京津小区行情观测</a>
+    <span class="week">F-01 原型 · 假数据</span>
+  </div>
+  <nav class="mainnav">
+    <a href="#/catalog">找小区</a>
+  </nav>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer">
+  <a class="footer-link" href="#/catalog">找小区</a>
+  <span class="footer-sep">·</span>
+  <span>原型 · 数据均为假数据，非投资建议</span>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // —— 写死的假数据（不发任何请求）——
+  var DATA = [
+    { id: "wangjing", name: "望京西园三区", addr: "北京 · 朝阳 · 望京", line: "15 号线 · 距望京站 0.62 km",
+      periods: 8, price: 71200, mom: 0.42, stage: ["升温", "shengwen"], temp: 62.4, week: "2026-W46" },
+    { id: "huaqing", name: "华清嘉园", addr: "北京 · 海淀 · 五道口", line: "13 号线 · 距五道口站 0.41 km",
+      periods: 9, price: 98500, mom: 1.06, stage: ["过热", "guore"], temp: 71.8, week: "2026-W46" },
+    { id: "yangguang100", name: "阳光100国际新城", addr: "天津 · 南开 · 体育中心", line: "6 号线 · 距体育中心站 0.88 km",
+      periods: 6, price: 28900, mom: -0.31, stage: ["温和", "wenhe"], temp: 48.2, week: "2026-W45" },
+    { id: "meijiang", name: "梅江康城", addr: "天津 · 河西 · 梅江", line: "6 号线 · 距梅江道站 1.12 km",
+      periods: 7, price: 33400, mom: -0.18, stage: ["温和", "wenhe"], temp: 44.2, week: "2026-W46" },
+    { id: "jindi", name: "金地格林小城", addr: "天津 · 津南 · 双港", line: "1 号线 · 距双林站 1.45 km",
+      periods: 5, price: 19800, mom: 0.24, stage: ["升温", "shengwen"], temp: 53.6, week: "2026-W46" }
+  ];
+
+  var lastQ = "";            // 记住上次关键词：结果页返回首页时回填（AC3）
+  var app = document.getElementById("app");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function money(n) { return "¥" + n.toLocaleString("en-US"); }
+
+  /** 解析 hash：#/ → 首页；#/catalog[?q=xx] → 结果页。 */
+  function parseHash() {
+    var h = location.hash || "#/";
+    if (h.indexOf("#/catalog") !== 0) return { name: "home", q: "" };
+    var q = "";
+    var i = h.indexOf("?");
+    if (i >= 0) {
+      h.slice(i + 1).split("&").forEach(function (pair) {
+        var j = pair.indexOf("=");
+        if (j < 0) return;
+        try {
+          if (decodeURIComponent(pair.slice(0, j)) === "q") {
+            q = decodeURIComponent(pair.slice(j + 1).replace(/\+/g, " "));
+          }
+        } catch (e) { /* 非法编码忽略 */ }
+      });
+    }
+    return { name: "catalog", q: q };
+  }
+
+  function match(q) {
+    var k = q.trim().toLowerCase();
+    if (!k) return DATA;
+    return DATA.filter(function (it) {
+      return (it.name + " " + it.addr).toLowerCase().indexOf(k) >= 0;
+    });
+  }
+
+  /** 跳转：空关键词 → #/catalog（不带 q）。同址时手动重绘，避免 hashchange 不触发。 */
+  function go(hash) {
+    if (location.hash === hash) render();
+    else location.hash = hash;
+  }
+
+  // —— 首页 ——
+  function renderHome() {
+    app.innerHTML =
+      '<section class="hero">' +
+        '<div class="hero-copy">' +
+          '<div class="hero-kicker">SHIKAR · MARKET OBSERVATORY</div>' +
+          '<h1>市场温度总览</h1>' +
+          '<p class="hero-sub">数据周 2026-W46 · 京津小区价格、温度与阶段信号，每周一次快照。</p>' +
+          '<form class="hero-search" id="searchForm" role="search" action="#/catalog">' +
+            '<input type="search" id="q" name="q" autocomplete="off" ' +
+              'placeholder="搜索小区名称或地址…" aria-label="搜索小区名称或地址" />' +
+            '<button type="submit">搜索</button>' +
+          '</form>' +
+          '<div class="hero-actions">' +
+            '<a class="hero-cta primary" href="#/catalog">浏览小区目录 →</a>' +
+            '<a class="hero-cta" href="#/catalog">双点通勤</a>' +
+          '</div>' +
+        '</div>' +
+        '<div class="hero-deco" aria-hidden="true">' +
+          '<div class="hero-ring"></div><div class="hero-line"></div>' +
+        '</div>' +
+      '</section>' +
+      '<p class="proto-note">' +
+        '<b>原型说明 · F-01</b>：在搜索框输入关键词回车或点「搜索」→ <b>#/catalog?q=关键词</b>；' +
+        '不输入直接点搜索 → <b>#/catalog</b>（全部小区，不报错）；' +
+        '结果页顶部保留「搜索：XX」并可清空；从结果页点浏览器返回，首页搜索框仍保留上次关键词。' +
+        '真实实现只需在 <code>renderOverview</code> 的 hero 里加这个表单，复用已有的 <code>#/catalog?q=</code> 深链与 <code>/api/catalog?q=</code>。' +
+      '</p>';
+
+    var form = document.getElementById("searchForm");
+    var input = document.getElementById("q");
+    input.value = lastQ;                     // AC3：返回首页时回填
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var q = input.value.trim();
+      lastQ = q;
+      go(q ? "#/catalog?q=" + encodeURIComponent(q) : "#/catalog");
+    });
+  }
+
+  // —— 结果页 / 目录页 ——
+  function row(it, i) {
+    var mom = it.mom;
+    return '<div class="find-row">' +
+      '<span class="fr-ordinal">' + String(i + 1).padStart(2, "0") + '</span>' +
+      '<div class="fr-main">' +
+        '<div class="fr-name">' + esc(it.name) +
+          '<span class="fr-loc">' + esc(it.addr) + '</span>' +
+        '</div>' +
+        '<div class="fr-meta">' +
+          '<span class="badge stage-' + it.stage[1] + '">' + it.stage[0] + '</span>' +
+          '<span>温度 ' + it.temp.toFixed(1) + '</span>' +
+          '<span>▪ ' + esc(it.line) + '</span>' +
+          '<span>' + it.periods + ' 期行情</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="fr-price">' +
+        '<span class="fr-price-v">' + money(it.price) + '</span>' +
+        '<span class="fr-mom ' + (mom >= 0 ? "up" : "down") + '">近月 ' +
+          (mom >= 0 ? "+" : "−") + Math.abs(mom).toFixed(2) + '%</span>' +
+        '<span class="fr-period">价源：' + it.week + '</span>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderCatalog(q) {
+    if (q) lastQ = q;                        // 深链直达结果页时也记住关键词
+    var items = match(q);
+    var html =
+      '<div class="find-head">' +
+        '<div class="eyebrow">01 / COMMUNITY EXPLORER</div>' +
+        '<div class="find-head-row">' +
+          '<div>' +
+            '<h1 class="find-title">围绕生活，找到一个小区。</h1>' +
+            '<p class="find-sub">地铁沿线与参考均价，把重要的偏好放在一起。</p>' +
+          '</div>' +
+          '<a class="catalog-entry" href="#/">← 返回总览</a>' +
+        '</div>' +
+      '</div>';
+
+    if (q) {
+      html += '<div class="poi-query-hint">' +
+        '<span>搜索：' + esc(q) + '</span>' +
+        '<button class="poi-tab" id="clearQ" type="button">清空</button>' +
+      '</div>';
+    }
+
+    html += '<div class="find-results">' +
+      '<div class="find-results-bar">' +
+        '<h2>' + (q ? "搜索结果" : "小区目录") + '</h2>' +
+        '<span class="find-count">' + items.length + ' 个匹配结果</span>' +
+      '</div>';
+
+    if (!items.length) {
+      html += '<div class="find-empty">' +
+        '<h3>没有找到「' + esc(q) + '」相关的小区</h3>' +
+        '<p>换个关键词，或清空搜索查看全部小区。</p>' +
+      '</div>';
+    } else {
+      items.forEach(function (it, i) { html += row(it, i); });
+    }
+
+    html += '<p class="find-footnote">原型演示：以上为写死的假数据，不发真实请求；真实页面由 <code>/api/catalog?q=</code> 返回并按名称 / 地址包含匹配。</p>' +
+    '</div>';
+
+    app.innerHTML = html;
+
+    var clear = document.getElementById("clearQ");
+    if (clear) clear.addEventListener("click", function () { lastQ = ""; go("#/catalog"); });
+  }
+
+  function render() {
+    var r = parseHash();
+    if (r.name === "catalog") renderCatalog(r.q);
+    else renderHome();
+  }
+
+  window.addEventListener("hashchange", render);
+  render();
+})();
+</script>
+</body>
+</html>

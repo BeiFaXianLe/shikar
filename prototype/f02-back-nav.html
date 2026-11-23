@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#101820" />
+<title>F-02 原型 · 返回键回到来源页</title>
+<link rel="stylesheet" href="../web/styles.css" />
+<style>
+  /* 仅本原型新增：可见的「当前 URL」小条 + 来路面包屑 */
+  .urlbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.02em;
+    color: var(--ink-soft);
+    background: rgba(210, 170, 109, 0.08);
+    border: 1px solid rgba(210, 170, 109, 0.22);
+    border-radius: var(--r-sm);
+    padding: 8px 14px; margin: 0 0 18px;
+  }
+  .urlbar .k { color: var(--gold); }
+  .urlbar code { color: var(--ivory); font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .urlbar .trail { margin-left: auto; color: var(--ink-faint); font-size: 11.5px; }
+  .proto-note {
+    margin: 22px 0 0; padding: 12px 16px; font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-soft); background: rgba(210, 170, 109, 0.07);
+    border-left: 2px solid var(--gold); border-radius: var(--r-sm);
+  }
+  .proto-note b { color: var(--gold); font-weight: 600; }
+  .proto-note code { font-family: var(--mono); font-size: 12px; color: var(--ivory); }
+  .proto-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .proto-actions .btn { font-size: 13px; padding: 7px 16px; }
+  .find-row { border-bottom: 1px dotted rgba(245, 239, 227, 0.10); }
+  .find-row:hover .fr-name { color: var(--gold); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/">shikar · 京津小区行情观测</a>
+    <span class="week">F-02 原型 · 假数据</span>
+  </div>
+  <nav class="mainnav">
+    <a href="#/catalog">找小区</a>
+    <a href="#/">总览</a>
+  </nav>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer">
+  <span>原型 · 数据均为假数据，非投资建议</span>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // —— 写死的假数据（不发任何请求）——
+  var DATA = {
+    wangjing: {
+      name: "望京西园三区", district: "朝阳", plate: "望京", city: "北京",
+      line: "15 号线 · 距望京站 0.62 km", periods: 8, temp: 62.4,
+      price: 71200, mom: 0.42, stage: ["升温", "shengwen"], week: "2026-W46",
+      similar: ["huaqing", "meijiang", "jindi"]
+    },
+    huaqing: {
+      name: "华清嘉园", district: "海淀", plate: "五道口", city: "北京",
+      line: "13 号线 · 距五道口站 0.41 km", periods: 9, temp: 71.8,
+      price: 98500, mom: 1.06, stage: ["过热", "guore"], week: "2026-W46",
+      similar: ["wangjing", "meijiang", "yangguang100"]
+    },
+    meijiang: {
+      name: "梅江康城", district: "河西", plate: "梅江", city: "天津",
+      line: "6 号线 · 距梅江道站 1.12 km", periods: 7, temp: 44.2,
+      price: 33400, mom: -0.18, stage: ["温和", "wenhe"], week: "2026-W46",
+      similar: ["yangguang100", "jindi", "wangjing"]
+    },
+    yangguang100: {
+      name: "阳光100国际新城", district: "南开", plate: "体育中心", city: "天津",
+      line: "6 号线 · 距体育中心站 0.88 km", periods: 6, temp: 48.2,
+      price: 28900, mom: -0.31, stage: ["温和", "wenhe"], week: "2026-W45",
+      similar: ["meijiang", "jindi", "huaqing"]
+    },
+    jindi: {
+      name: "金地格林小城", district: "津南", plate: "双港", city: "天津",
+      line: "1 号线 · 距双林站 1.45 km", periods: 5, temp: 53.6,
+      price: 19800, mom: 0.24, stage: ["升温", "shengwen"], week: "2026-W46",
+      similar: ["yangguang100", "meijiang", "wangjing"]
+    }
+  };
+
+  // 站内来路栈：只记本站导航，用来判断「有没有来路」和返回按钮的文案。
+  // 真实实现里 history 里本来就有来路，这里显式存一份是为了原型里看得见。
+  var STACK_KEY = ["shikar", "proto", "f02", "stack"].join("-");
+  var resetStack = false;
+
+  var app = document.getElementById("app");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function money(n) { return "¥" + n.toLocaleString("en-US"); }
+
+  function getStack() {
+    try {
+      var raw = sessionStorage.getItem(STACK_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function setStack(arr) {
+    try { sessionStorage.setItem(STACK_KEY, JSON.stringify(arr)); } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  function currentHash() { return location.hash || "#/"; }
+
+  function parseHash() {
+    var h = currentHash();
+    if (h.indexOf("#/xiaoqu/") === 0) {
+      var id = h.slice(9).split("?")[0];
+      try { id = decodeURIComponent(id); } catch (e) { /* 保持原样 */ }
+      return { name: "detail", id: id };
+    }
+    if (h.indexOf("#/catalog") === 0) return { name: "catalog" };
+    return { name: "home" };
+  }
+
+  function titleOf(hash) {
+    if (hash.indexOf("#/xiaoqu/") === 0) {
+      var id = hash.slice(9);
+      return DATA[id] ? DATA[id].name : "小区详情";
+    }
+    if (hash.indexOf("#/catalog") === 0) return "小区目录";
+    return "总览";
+  }
+
+  /** 每次 hash 变化同步来路栈：后退则弹出，前进则压入。 */
+  function syncStack() {
+    var h = currentHash();
+    var s = getStack();
+    if (resetStack) { resetStack = false; setStack([h]); return; }
+    if (s.length >= 2 && s[s.length - 2] === h) { s.pop(); setStack(s); return; }
+    if (s[s.length - 1] !== h) { s.push(h); setStack(s); }
+  }
+
+  /**
+   * 返回：有站内来路就 history.back()（真的按来路回退），
+   * 没有来路（直接打开分享链接）就兜底回 #/catalog —— 用 replace 避免把深链留在返回栈里。
+   */
+  function goBack() {
+    var s = getStack();
+    if (s.length >= 2) {
+      history.back();
+    } else {
+      resetStack = true;
+      location.replace("#/catalog");
+      // 部分浏览器 replace 到同文档 hash 不触发 hashchange，兜底手动渲染一次。
+      setTimeout(function () { if (parseHash().name === "catalog") render(); }, 0);
+    }
+  }
+
+  function backLabel() {
+    var s = getStack();
+    if (s.length < 2) return "← 返回目录";
+    return "← 返回 " + titleOf(s[s.length - 2]);
+  }
+
+  function urlBar() {
+    var s = getStack();
+    var trail = s.map(function (h) { return titleOf(h); }).join(" → ");
+    return '<div class="urlbar">' +
+      '<span class="k">当前 URL</span><code>' + esc(currentHash()) + '</code>' +
+      '<span class="trail">来路：' + esc(trail || "（无，直接打开）") +
+        ' · history.length ' + history.length + ' · 可回退 ' + (s.length >= 2 ? "是" : "否") +
+      '</span>' +
+    '</div>';
+  }
+
+  // —— 首页 / 目录 ——
+  function renderHome() {
+    app.innerHTML =
+      '<section class="hero">' +
+        '<div class="hero-copy">' +
+          '<div class="hero-kicker">SHIKAR · MARKET OBSERVATORY</div>' +
+          '<h1>市场温度总览</h1>' +
+          '<p class="hero-sub">F-02 原型：点「进入小区目录」开始走 目录 → A → B → 返回 的链路。</p>' +
+          '<div class="hero-actions">' +
+            '<a class="hero-cta primary" href="#/catalog">进入小区目录 →</a>' +
+          '</div>' +
+        '</div>' +
+        '<div class="hero-deco" aria-hidden="true"><div class="hero-ring"></div><div class="hero-line"></div></div>' +
+      '</section>' +
+      noteBlock();
+  }
+
+  function renderCatalog() {
+    var ids = Object.keys(DATA);
+    var html =
+      '<div class="find-head">' +
+        '<div class="eyebrow">01 / COMMUNITY EXPLORER</div>' +
+        '<div class="find-head-row">' +
+          '<div>' +
+            '<h1 class="find-title">小区目录</h1>' +
+            '<p class="find-sub">点任意小区进详情；在详情页点「相似小区」再进一个，然后连点返回。</p>' +
+          '</div>' +
+          '<a class="catalog-entry" href="#/">← 返回总览</a>' +
+        '</div>' +
+      '</div>' +
+      '<div class="find-results">' +
+        '<div class="find-results-bar"><h2>全部小区</h2>' +
+          '<span class="find-count">' + ids.length + ' 个</span></div>';
+
+    ids.forEach(function (id, i) {
+      var it = DATA[id];
+      html += '<a class="find-row" href="#/xiaoqu/' + id + '">' +
+        '<span class="fr-ordinal">' + String(i + 1).padStart(2, "0") + '</span>' +
+        '<div class="fr-main">' +
+          '<div class="fr-name">' + esc(it.name) +
+            '<span class="fr-loc">' + it.city + ' · ' + it.district + ' · ' + it.plate + '</span>' +
+          '</div>' +
+          '<div class="fr-meta">' +
+            '<span class="badge stage-' + it.stage[1] + '">' + it.stage[0] + '</span>' +
+            '<span>温度 ' + it.temp.toFixed(1) + '</span>' +
+            '<span>▪ ' + esc(it.line) + '</span>' +
+            '<span>' + it.periods + ' 期行情</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="fr-price">' +
+          '<span class="fr-price-v">' + money(it.price) + '</span>' +
+          '<span class="fr-mom ' + (it.mom >= 0 ? "up" : "down") + '">近月 ' +
+            (it.mom >= 0 ? "+" : "−") + Math.abs(it.mom).toFixed(2) + '%</span>' +
+        '</div>' +
+      '</a>';
+    });
+
+    html += '</div>' + noteBlock();
+    app.innerHTML = html;
+  }
+
+  function renderDetail(id) {
+    var it = DATA[id];
+    if (!it) {
+      app.innerHTML = '<div class="error">没有这个小区：' + esc(id) + '</div>' + noteBlock();
+      return;
+    }
+
+    var html = '<a class="back" href="#" id="backLink">' + esc(backLabel()) + '</a>' +
+      '<div class="detail-head">' +
+        '<div class="detail-title-row">' +
+          '<h1 class="detail-title">' + esc(it.name) + '</h1>' +
+          '<span class="badge stage-' + it.stage[1] + '">' + it.stage[0] + '</span>' +
+          '<span class="detail-loc">' + it.city + ' · ' + it.district + ' · ' + it.plate + '</span>' +
+        '</div>' +
+        '<div class="detail-metrics">' +
+          '<div class="metric"><span class="k">最新温度</span>' +
+            '<span class="v">' + it.temp.toFixed(1) + '<span class="unit"> °C</span></span></div>' +
+          '<div class="metric"><span class="k">最新价格</span>' +
+            '<span class="v">' + it.price.toLocaleString("en-US") + '<span class="unit"> 元/㎡</span></span></div>' +
+          '<div class="metric"><span class="k">数据期数</span>' +
+            '<span class="v" style="font-size:22px">' + it.periods + '<span class="unit"> 期</span></span></div>' +
+          '<div class="metric"><span class="k">城市</span>' +
+            '<span class="v" style="font-size:20px">' + it.city + '</span></div>' +
+        '</div>' +
+      '</div>' +
+      '<section class="section">' +
+        '<h2>相似小区</h2>' +
+        '<ul class="similar-list">';
+
+    it.similar.forEach(function (sid) {
+      var s = DATA[sid];
+      if (!s) return;
+      html += '<li class="similar-item">' +
+        '<a class="similar-name" href="#/xiaoqu/' + sid + '">' + esc(s.name) + '</a>' +
+        '<span class="similar-meta">温度 ' + s.temp.toFixed(1) + ' · ' + s.stage[0] +
+          ' · ' + s.price.toLocaleString("en-US") + ' 元/㎡</span>' +
+        '<span class="similar-reason">同城、价差在 ±30% 内，阶段相近（原型假数据）</span>' +
+      '</li>';
+    });
+
+    html += '</ul></section>' + noteBlock();
+    app.innerHTML = html;
+
+    document.getElementById("backLink").addEventListener("click", function (e) {
+      e.preventDefault();
+      goBack();
+    });
+  }
+
+  function noteBlock() {
+    return '<p class="proto-note">' +
+      '<b>原型说明 · F-02</b>：返回按钮不再写死 <code>#/catalog</code>，而是判断有没有站内来路——' +
+      '有就 <code>history.back()</code> 回上一步（A → B 后返回到 A），没有就兜底回目录。' +
+      '走一遍：<b>目录 → 望京西园三区 → 相似小区里的华清嘉园 → 返回（回望京）→ 再返回（回目录）</b>。' +
+      '<div class="proto-actions">' +
+        '<button class="btn" type="button" id="openDeepLink">模拟「分享链接直接打开」</button>' +
+        '<button class="btn" type="button" id="resetDemo">重置演示（清空来路）</button>' +
+      '</div>' +
+    '</p>';
+  }
+
+  function bindNotes() {
+    var open = document.getElementById("openDeepLink");
+    if (open) open.addEventListener("click", function () {
+      window.open(location.pathname + "#/xiaoqu/huaqing", "_blank");
+    });
+    var reset = document.getElementById("resetDemo");
+    if (reset) reset.addEventListener("click", function () {
+      setStack([]);
+      resetStack = true;
+      location.hash = "#/catalog";
+      render();
+    });
+  }
+
+  function render() {
+    var r = parseHash();
+    if (r.name === "detail") renderDetail(r.id);
+    else if (r.name === "catalog") renderCatalog();
+    else renderHome();
+
+    // URL 条统一插到内容最前面
+    var bar = document.createElement("div");
+    bar.innerHTML = urlBar();
+    app.insertBefore(bar.firstChild, app.firstChild);
+
+    bindNotes();
+  }
+
+  function onHashChange() {
+    syncStack();
+    render();
+  }
+
+  // 首次进入：把当前地址作为来路栈的起点（深链直开时栈里只有它自己 → 判定为无来路）
+  (function init() {
+    var s = getStack();
+    if (!s.length) setStack([currentHash()]);
+    else if (s[s.length - 1] !== currentHash()) setStack([currentHash()]);
+    render();
+  })();
+
+  window.addEventListener("hashchange", onHashChange);
+})();
+</script>
+</body>
+</html>
