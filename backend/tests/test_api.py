@@ -27,6 +27,7 @@ from shikar.storage import (
     add_signal,
     init_db,
     upsert_metric,
+    upsert_poi,
     upsert_xiaoqu,
 )
 
@@ -87,6 +88,17 @@ def _seed(conn) -> None:
         )
 
     add_signal(conn, "X1", "2026-01-10", "回暖", {"note": "价格回升"})
+
+    # 医院：三级/性质两个维度分别为 三甲·公办 / 二甲·民办 / 无等级·社区。
+    for pid, grade, ownership in (("H1", "三甲", "公办"),
+                                  ("H2", "二甲", "民办"),
+                                  ("H3", None, "社区")):
+        upsert_poi(conn, {
+            "id": pid, "type": "hospital", "subtype": None, "name": pid,
+            "city": "北京", "grade": grade, "ownership": ownership,
+            "lat": 39.9, "lng": 116.4, "district": "东城",
+            "address": None, "source": "test", "version": "2026-11",
+        })
 
 
 @pytest.fixture()
@@ -235,6 +247,34 @@ def test_chinese_not_escaped_raw(live_server: dict) -> None:
     text = body.decode("utf-8")
     assert "望京A区" in text
     assert "\\u" not in text
+
+
+def test_hospitals_filter_by_ownership_and_grade(live_server: dict) -> None:
+    """``/api/hospitals`` 的 ownership 单条件、与 grade 叠加都生效，空值不过滤。"""
+    base = "/api/hospitals?city=%E5%8C%97%E4%BA%AC"
+    status, _h, payload = _json(live_server, "GET", base)
+    assert status == 200
+    assert [r["id"] for r in payload["items"]] == ["H1", "H2", "H3"]
+
+    status, _h, payload = _json(live_server, "GET", base + "&ownership=%E7%A4%BE%E5%8C%BA")
+    assert [r["id"] for r in payload["items"]] == ["H3"]
+
+    status, _h, payload = _json(
+        live_server, "GET", base + "&grade=%E4%B8%89%E7%94%B2&ownership=%E5%85%AC%E5%8A%9E"
+    )
+    assert [r["id"] for r in payload["items"]] == ["H1"]
+
+    status, _h, payload = _json(
+        live_server, "GET", base + "&grade=%E4%B8%89%E7%94%B2&ownership=%E6%B0%91%E5%8A%9E"
+    )
+    assert payload["items"] == []
+
+    # 响应带 ownership 字段，供前端次行展示
+    assert payload is not None
+    status, _h, all_items = _json(live_server, "GET", base)
+    assert {r["id"]: r["ownership"] for r in all_items["items"]} == {
+        "H1": "公办", "H2": "民办", "H3": "社区",
+    }
 
 
 def test_default_host_is_loopback() -> None:

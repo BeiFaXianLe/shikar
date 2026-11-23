@@ -375,10 +375,12 @@ def _route(
             conn, "school", subtype=_first(qs, "stage"), district=_first(qs, "district"),
             city=_first(qs, "city"), q=_first(qs, "q"))}
 
-    # /api/hospitals  （医院明细：等级 / 城市 / 区 / 搜索）
+    # /api/hospitals  （医院明细：等级 / 性质 / 城市 / 区 / 搜索）
     if path == "/api/hospitals":
         return 200, {"items": storage.list_pois(
-            conn, "hospital", grade=_first(qs, "grade"), district=_first(qs, "district"),
+            conn, "hospital", grade=_first(qs, "grade"),
+            ownership=_first(qs, "ownership"),
+            district=_first(qs, "district"),
             city=_first(qs, "city"), q=_first(qs, "q"))}
 
     # /api/hsr  （高铁站明细 / 搜索）
