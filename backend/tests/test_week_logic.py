@@ -252,3 +252,104 @@ def test_whitespace_in_week_does_not_block_temperature(monkeypatch, tmp_path):
         _rows2026(week=" 2026-W46 "), _rows2019(),
     )
     assert temps["2026-W46"] is not None
+
+
+def test_build_db_uses_pipeline_gate():
+    """门槛只有一份实现：build_db 必须引用 pipeline.is_sufficient，不得自带副本。"""
+    from shikar import pipeline
+
+    assert build_db.pipeline is pipeline
+    assert build_db.pipeline.is_sufficient is pipeline.is_sufficient
+    with open(build_db.__file__, "r", encoding="utf-8") as fh:
+        src = fh.read()
+    assert "def parse_week(" not in src, "build_db 又复制了一份周次解析"
+    assert "def sufficient(" not in src, "build_db 又复制了一份充分性门槛"
+    assert "pipeline.is_sufficient(" in src
+
+
+def test_build_db_and_recompute_agree_on_same_data(monkeypatch, tmp_path):
+    """交叉对照：同一份数据，build_db 与 pipeline.recompute 的合格判定必须一致。
+
+    只要有人把门槛拆成两份、或改了一处，这里就会红：先由 build_db 建库，
+    再用 recompute 在同一库上重算，判定（是否有温度）必须完全相同。
+    """
+    import sqlite3
+
+    from shikar import pipeline
+
+    def row(xid, name, week):
+        return {
+            "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
+            "xiaoqu_name": name, "week": week, "price": "60000", "supply": "100",
+            "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
+        }
+
+    rows2026 = [row("S1", "合格小区", w)
+                for w in ("2025-W05", "2025-W22", "2026-W05", "2026-W47")]
+    rows2026 += [row("S2", "不足小区", w) for w in ("2026-W05", "2026-W47")]
+
+    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
+    monkeypatch.setattr(
+        build_db, "read_csv",
+        lambda name: rows2026 if name == "fang_2026.csv" else [],
+    )
+    build_db.main()
+
+    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        def verdicts():
+            per: dict[str, list] = {}
+            for r in conn.execute(
+                "SELECT xiaoqu_id, temperature FROM xiaoqu_metric_weekly"
+            ):
+                per.setdefault(r["xiaoqu_id"], []).append(r["temperature"])
+            return {k: any(t is not None for t in v) for k, v in per.items()}
+
+        before = verdicts()
+        assert before == {"北京|S1": True, "北京|S2": False}, before
+
+        pipeline.recompute(conn)
+        after = verdicts()
+        assert after == before, f"recompute 与 build_db 判定不一致：build_db={before} recompute={after}"
+    finally:
+        conn.close()
+
+
+def test_cross_check_detects_divergent_thresholds(monkeypatch, tmp_path):
+    """交叉对照的灵敏度：同一库上把 recompute 的门槛调严，判定必须翻转。
+
+    这不是产品行为，而是证明「两条路径一旦参数分叉，交叉对照能抓到」。
+    数据为 3 期、跨度 378 天：默认门槛（≥3 期）合格；recompute 传 min_periods=4
+    后应变为不合格，于是「build_db 有温度 / recompute 无温度」的分叉会被暴露。
+    """
+    import sqlite3
+
+    from shikar import pipeline
+
+    rows = [{
+        "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": "T1",
+        "xiaoqu_name": "三期小区", "week": w, "price": "60000", "supply": "100",
+        "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
+    } for w in ("2025-W05", "2025-W30", "2026-W07")]
+
+    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
+    monkeypatch.setattr(
+        build_db, "read_csv",
+        lambda name: rows if name == "fang_2026.csv" else [],
+    )
+    build_db.main()
+
+    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        def has_temp() -> bool:
+            return conn.execute(
+                "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
+            ).fetchone()[0] > 0
+
+        assert has_temp() is True, "默认门槛下 3 期/378 天应合格"
+        pipeline.recompute(conn, min_periods=4)
+        assert has_temp() is False, "更严门槛下应判不合格；交叉对照未能发现分叉"
+    finally:
+        conn.close()

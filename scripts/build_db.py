@@ -12,7 +12,7 @@ import csv, os, sqlite3, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
-from shikar import storage, scoring  # noqa: E402
+from shikar import pipeline, storage, scoring  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 
@@ -219,36 +219,16 @@ def main():
             add_xq(xid, city, r["district"], r.get("plate") or None, name, lng=lng, lat=lat)
         metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), None, None))
 
-    # —— 数据充足度：≥3 期、跨度≥365天、相邻缺口≤365天，才允许计算温度/阶段 ——
-    from datetime import date
-    def parse_week(w):
-        try:
-            if "W" in w:
-                y, ww = w.split("-W"); return date.fromisocalendar(int(y), int(ww), 1)
-            if "-" in w:
-                y, m = w.split("-")[:2]; return date(int(y), int(m), 1)
-        except Exception:
-            return None
-        return None
-
+    # —— 数据充足度：统一使用 shikar.pipeline.is_sufficient（docs/04 §2.2）——
+    # 门槛只保留一份实现：build_db 与 pipeline.recompute 共用，避免两条写入路径漂移。
+    # 任一不满足（<3 期 / 跨度 <365 天 / 缺口 >365 天）→ 不写温度与阶段。
     weeks_by = {}
     for xid, week, price, supply, mom in metrics:
         weeks_by.setdefault(xid, set()).add(week)
 
-    def sufficient(xid):
-        ws = sorted(d for d in (parse_week(w) for w in weeks_by.get(xid, set())) if d)
-        if len(ws) < 3:
-            return False
-        if (ws[-1] - ws[0]).days < 365:
-            return False
-        gaps = [(ws[i + 1] - ws[i]).days for i in range(len(ws) - 1)]
-        if gaps and max(gaps) > 365:
-            return False
-        return True
-
     city_mom = {}
     for xid, week, price, supply, mom in metrics:
-        if sufficient(xid) and mom is not None:
+        if pipeline.is_sufficient(weeks_by.get(xid, set())) and mom is not None:
             city_mom.setdefault(xiaoqu[xid]["city"], []).append(mom)
 
     db = os.path.join(DATA, "shikar.db")
@@ -278,7 +258,7 @@ def main():
         n_metric = 0; n_temp = 0
         for xid, week, price, supply, mom in metrics:
             temp = None; stage = None
-            if sufficient(xid) and current_week is not None and week == current_week:
+            if pipeline.is_sufficient(weeks_by.get(xid, set())) and current_week is not None and week == current_week:
                 n_mom = 50.0 if mom is None else scoring.percentile_normalize(mom, city_mom.get(xiaoqu[xid]["city"], []))
                 temp = scoring.compute_temperature({"mom4": n_mom, "absorb": 50.0, "bargain": 50.0, "heat": 50.0})
                 stage = scoring.classify_stage(temp, mom if mom is not None else 0.0)
