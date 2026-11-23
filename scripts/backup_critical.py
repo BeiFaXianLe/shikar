@@ -67,11 +67,15 @@ def _sql_literal(v):
 
 
 def dump_table_sql(conn, table, out):
-    """把一张表导出成 DELETE + INSERT 语句写入 out（StringIO，按批 flush 避免占内存）。"""
+    """把一张表导出成 DELETE + INSERT 语句写入 out（StringIO，按批 flush 避免占内存）。
+
+    :return: 导出的行数；**表不存在时返回 ``None``**（供调用方当作「不可再生数据缺失」，
+        与「表存在但 0 行」区分开）。
+    """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)]
     if not cols:
         out.write("-- 表 %s 不存在，跳过\n" % table)
-        return 0
+        return None
     total = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
     out.write("-- %s: %d 行\n" % (table, total))
     out.write("DELETE FROM %s;\n" % table)
@@ -100,12 +104,16 @@ def dump_table_sql(conn, table, out):
     return n
 
 
-def cmd_backup(args):
+def cmd_backup(args) -> int:
+    """生成一份不可再生数据备份；关键文件缺失时返回非零（不当作成功）。"""
     db = args.db
     out_dir = args.out_dir
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(out_dir, "critical-%s.tar.gz" % ts)
+    # 先写成 partial- 前缀，确认关键文件齐全后才改名为 critical-：
+    # push_backup 只挑 critical-*.tar.gz，不完整备份永远不会被选中推送。
+    # （推送是 force push，用不完整副本覆盖异地唯一备份 = 直接丢数据。）
+    path = os.path.join(out_dir, "partial-%s.tar.gz" % ts)
 
     file_stats = {}
     table_counts = {}
@@ -120,8 +128,10 @@ def cmd_backup(args):
                 table_counts[t] = dump_table_sql(conn, t, sql_buf)
         finally:
             conn.close()
+        db_exists = True
     else:
         sql_buf.write("-- 数据库不存在，跳过表备份\n")
+        db_exists = False
 
     with tarfile.open(path, "w:gz") as tar:
         # 1. 原始文件（最珍贵：CSV 丢了无法再生）
@@ -140,21 +150,48 @@ def cmd_backup(args):
         tar.addfile(info, io.BytesIO(data))
 
     size = os.path.getsize(path)
+
+    # 完整性门：**文件 + 库 + 四张不可再生表**都要在（docs/45 P3-2）。
+    # 09:13 那份备份就是缺 fang_preview_all.csv 却“成功”的；
+    # 只查 CSV 同样会放行「库/表丢了」的备份，而 push_backup 是 force push，
+    # 推上去就会用空的 db.sql 覆盖异地唯一那份 POI/信号表。
+    missing = [rel for rel, sz in file_stats.items() if sz is None]
+    missing_tables = [t for t, n in table_counts.items() if n is None]
+    incomplete = bool(missing) or not db_exists or bool(missing_tables)
+
+    complete_path = os.path.join(out_dir, "critical-%s.tar.gz" % ts)
+    if not incomplete:
+        os.replace(path, complete_path)
+        path = complete_path
+
     print("备份完成: %s (%.2f MB)" % (path, size / 1e6))
     print("  文件:")
     for rel, sz in file_stats.items():
         print("    %-32s %s" % (os.path.basename(rel), "缺失" if sz is None else "%.1f KB" % (sz / 1024)))
     print("  表:")
+    if not db_exists:
+        print("    %-32s %s" % ("(数据库)", "缺失"))
     for t, n in table_counts.items():
-        print("    %-32s %d 行" % (t, n))
+        print("    %-32s %s" % (t, "缺失" if n is None else "%d 行" % n))
 
-    # 轮转：只保留最近 keep 份
+    if incomplete:
+        if missing:
+            print("❌ 关键文件缺失：%s" % ", ".join(os.path.basename(m) for m in missing))
+        if not db_exists:
+            print("❌ 数据库不存在：%s（表备份为空）" % db)
+        if missing_tables:
+            print("❌ 不可再生表缺失：%s" % ", ".join(missing_tables))
+        print("   已保存为 %s（不会被 push_backup 选中推送）。" % os.path.basename(path))
+        print("   缺失的不可再生数据请先从私有备份仓库取回 / 先重建库，再重跑本命令；")
+        print("   本命令返回非零，deploy/refresh.sh 据此跳过异地推送。")
+
+    # 轮转：只保留最近 keep 份（仅统计完整的 critical-*）
     files = sorted(glob.glob(os.path.join(out_dir, "critical-*.tar.gz")))
     if args.keep > 0 and len(files) > args.keep:
         for old in files[: len(files) - args.keep]:
             os.remove(old)
             print("  删除旧备份: %s" % os.path.basename(old))
-    return path
+    return 1 if incomplete else 0
 
 
 def cmd_restore(args):
@@ -242,7 +279,9 @@ def main(argv=None):
     ls.set_defaults(func=cmd_list)
 
     args = ap.parse_args(argv)
-    args.func(args)
+    rc = args.func(args)
+    if rc:
+        raise SystemExit(rc)
 
 
 if __name__ == "__main__":

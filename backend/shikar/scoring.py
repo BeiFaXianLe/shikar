@@ -8,7 +8,8 @@
 
 * §6.1 基础指标定义（price / mom4 / supply / vol30 / absorb / bargain / heat）。
 * §6.2 归一化：每个指标在城市范围内做 52 周滚动百分位，映射到 0–100。
-* §6.3 温度：``0.40*n(mom4) + 0.25*n(absorb) + 0.20*(100-n(bargain)) + 0.15*n(heat)``。
+* §6.3 温度：``0.40*n(mom4) + 0.25*n(absorb) + 0.20*(100-n(bargain)) + 0.15*n(heat)``；
+  分项缺失时按**可用分项**重新归一化权重（见 :func:`compute_temperature`）。
 * §6.4 趋势阶段（温度水位 × 动量方向）。
 * §6.5 右侧信号（买入 / 风险）。
 """
@@ -71,26 +72,33 @@ def percentile_normalize(value: float, history: Sequence[float]) -> float:
 
 
 def compute_temperature(
-    metrics: Mapping[str, float],
+    metrics: Mapping[str, float | None],
     weights: Mapping[str, float] | None = None,
 ) -> float:
-    """按 PRD §6.3 加权求和计算 0–100 的温度值。
+    """按 PRD §6.3 加权求和计算 0–100 的温度值（缺失分项按可用权重归一化）。
 
     公式（权重来源：PRD §6.3，可在配置中覆盖）::
 
-        temperature = 0.40*n(mom4) + 0.25*n(absorb)
-                      + 0.20*(100 - n(bargain)) + 0.15*n(heat)
+        temperature = Σ(w_i * s_i) / Σ(w_i)      i 取「可用分项」
 
-    其中 ``n()`` 为 :func:`percentile_normalize`。
+    其中 ``s_i`` 是分项 ``i`` 的 0–100 已归一化值，``bargain`` 取反向
+    ``100 - n(bargain)``（议价空间越大温度越低）。
 
-    设计约定（匹配 §6.3 分解，纯函数、无隐式状态）：``metrics`` 为指标名到
-    数值的映射，其四项分项 ``n(mom4)`` / ``n(absorb)`` / ``n(bargain)`` /
-    ``n(heat)`` 由调用方先经 :func:`percentile_normalize` 计算后以 0–100 的
-    **已归一化值** 填入键 ``"mom4"`` / ``"absorb"`` / ``"bargain"`` /
-    ``"heat"``，本函数只做加权求和并裁剪到 ``[0, 100]``。缺失的分项按中性值
-    ``50.0`` 处理（与样本不足回退一致）。
+    设计约定（纯函数、无隐式状态）：``metrics`` 为指标名到数值的映射，其四项
+    分项 ``n(mom4)`` / ``n(absorb)`` / ``n(bargain)`` / ``n(heat)`` 由调用方先经
+    :func:`percentile_normalize` 计算后以 0–100 的 **已归一化值** 填入键
+    ``"mom4"`` / ``"absorb"`` / ``"bargain"`` / ``"heat"``。
 
-    :param metrics: 归一化后的四项分项值（0–100）的映射。
+    **缺失分项不参与加权，也不记中性 50 分**：键不存在或值为 ``None`` 的分项
+    直接从分子分母中剔除，权重在剩余分项上重新归一化。旧口径把缺失分项当
+    50 分，而 ``absorb`` / ``bargain`` / ``heat`` 三项在现网数据里全库为空，
+    导致 75% 权重永久中性、温度实际恒为 50.0（见 docs/45 报告 P0-1）。
+
+    四个分项全部可用时，本函数与旧口径逐值等价（``Σw = 1``）。全部分项都
+    不可用时返回中性 ``50.0``；调用方应把这种情形视为「无温度」（写 ``None``），
+    需要区分时请先判断 ``metrics`` 里是否有可用分项。
+
+    :param metrics: 已归一化的分项值（0–100）映射；缺失分项可省略或传 ``None``。
     :param weights: 可选权重覆盖，缺省用 :data:`DEFAULT_WEIGHTS`。
     :return: 裁剪到 0–100 的温度。
     """
@@ -98,26 +106,21 @@ def compute_temperature(
     if weights is not None:
         w.update(weights)
 
-    if not metrics:
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for name, weight in w.items():
+        value = metrics.get(name)
+        if value is None or weight == 0.0:
+            continue
+        score = 100.0 - float(value) if name == "bargain" else float(value)
+        weighted_sum += weight * score
+        total_weight += weight
+
+    if total_weight == 0.0:
+        # 没有任何可用分项：保持中性回退，由调用方决定是否当成「无温度」。
         return 50.0
 
-    def _norm(name: str) -> float:
-        # 取已归一化分项值，缺省按中性 50.0。
-        return float(metrics.get(name, 50.0))
-
-    n_mom4 = _norm("mom4")
-    n_absorb = _norm("absorb")
-    n_bargain = _norm("bargain")
-    n_heat = _norm("heat")
-
-    temperature = (
-        w["mom4"] * n_mom4
-        + w["absorb"] * n_absorb
-        + w["bargain"] * (100.0 - n_bargain)
-        + w["heat"] * n_heat
-    )
-
-    return max(0.0, min(100.0, temperature))
+    return max(0.0, min(100.0, weighted_sum / total_weight))
 
 
 def classify_stage(temperature: float, mom4: float) -> str:

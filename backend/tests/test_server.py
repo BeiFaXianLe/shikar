@@ -180,18 +180,19 @@ def test_no_web_root_keeps_old_404(no_web_server: dict) -> None:
 # seed_demo 测试
 # --------------------------------------------------------------------------- #
 def test_seed_demo_counts() -> None:
-    """``seed_demo`` 返回 6 小区、60 指标行，且库中行数一致。"""
+    """``seed_demo`` 返回 6 小区、6×``_DEMO_WEEKS`` 指标行，且库中行数一致。"""
     conn = _threadsafe_conn()
     storage.init_db(conn)
     try:
         stats = seed_demo(conn)
-        assert stats == {"xiaoqu": 6, "metrics": 60}
+        expected = 6 * _DEMO_WEEKS
+        assert stats == {"xiaoqu": 6, "metrics": expected}
         n_xiaoqu = conn.execute("SELECT COUNT(*) FROM xiaoqu").fetchone()[0]
         n_metric = conn.execute(
             "SELECT COUNT(*) FROM xiaoqu_metric_weekly"
         ).fetchone()[0]
         assert n_xiaoqu == 6
-        assert n_metric == 60
+        assert n_metric == expected
     finally:
         conn.close()
 
@@ -230,6 +231,19 @@ def test_seed_demo_prices_have_variance() -> None:
         conn.close()
 
 
+def test_seed_demo_temperatures_have_variance() -> None:
+    """Demo 温度必须有区分度：同城小区不能全是同一个值（否则最热=最冷）。"""
+    conn = _threadsafe_conn()
+    storage.init_db(conn)
+    try:
+        seed_demo(conn)
+        for city in compute_overview(conn)["cities"]:
+            temps = [item["temperature"] for item in city["top_hot"]]
+            assert len(set(temps)) > 1, f"{city['city']} demo 温度无区分度：{temps}"
+    finally:
+        conn.close()
+
+
 def test_seed_demo_idempotent() -> None:
     """重复调用 ``seed_demo`` 不产生重复行。"""
     conn = _threadsafe_conn()
@@ -242,7 +256,7 @@ def test_seed_demo_idempotent() -> None:
         ).fetchone()[0]
         n_xiaoqu = conn.execute("SELECT COUNT(*) FROM xiaoqu").fetchone()[0]
         assert n_xiaoqu == 6
-        assert n_metric == 60
+        assert n_metric == 6 * _DEMO_WEEKS
     finally:
         conn.close()
 

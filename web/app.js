@@ -1128,7 +1128,7 @@
       var priceText = fmtPrice(it.latest_price);
       var momText = "";
       if (it.latest_mom !== null && it.latest_mom !== undefined && !isNaN(Number(it.latest_mom))) {
-        momText = "近月 " + fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
+        momText = "近4周 " + fmtSigned(Number(it.latest_mom) * 100, 2) + "%";
       }
       // P1-03/P1-1：每条价格标注期次与来源；非全库最新一期显式标「历史」。
       var periodNode = null;
@@ -1743,7 +1743,7 @@
         ? fmtSigned(Number(r.mom4) * 100, 2) + "%" : "—";
       section.appendChild(el("div", { class: "readout" }, [
         readoutItem("参考均价", fmtNum(r.price, 0), " 元/㎡"),
-        readoutItem("近月环比", mom, ""),
+        readoutItem("较4周前", mom, ""),
         readoutItem("在售套数", r.supply == null ? "—" : String(r.supply), " 套"),
         readoutItem("数据周", r.week || "—", ""),
       ]));

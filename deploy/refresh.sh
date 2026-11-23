@@ -51,9 +51,14 @@ if python3 scripts/build_db.py; then
   # 否则 xiaoqu_metric_weekly.temperature 大面积 NULL，首页 /api/overview 聚合为空。
   python3 scripts/recompute_metrics.py --db data/shikar.db || echo "WARN: recompute 指标失败（首页可能空白）"
   # 重建成功后刷一次备份，保证「备份 = 当前库 + 当前 CSV」
-  python3 scripts/backup_critical.py backup --keep 12 || echo "WARN: 关键数据备份失败（继续）"
-  # 推送到私有 GitHub 仓库做异地容灾（失败不阻塞刷新）
-  python3 scripts/push_backup.py || echo "WARN: 异地备份推送失败（本地备份仍保留）"
+  # 备份不完整（缺不可再生文件）时 backup_critical 返回非零：此时**不推送**，
+  # 否则 force push 会用不完整副本覆盖异地那份唯一备份。
+  if python3 scripts/backup_critical.py backup --keep 12; then
+    # 推送到私有 GitHub 仓库做异地容灾（失败不阻塞刷新）
+    python3 scripts/push_backup.py || echo "WARN: 异地备份推送失败（本地备份仍保留）"
+  else
+    echo "ERROR: 关键数据备份不完整（缺文件/库/不可再生表），已跳过异地推送；本地库已按本次 CSV 重建、CSV 未动"
+  fi
   echo "restarting shikar"
   sudo -n systemctl restart shikar && echo "shikar restarted"
 else

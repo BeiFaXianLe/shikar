@@ -7,12 +7,18 @@
 
 输出：data/shikar.db
 用法：python scripts/build_db.py
+
+本脚本只写**原始数据**（xiaoqu / xiaoqu_metric_weekly 的价格与供应）。
+``mom4`` / ``absorb`` / ``temperature`` / ``stage`` 等派生列一律留空，由
+``scripts/recompute_metrics.py``（``shikar.pipeline.recompute``）统一计算。
+这样口径只有一份实现：旧实现把平台给的同月环比 ``mom1_pct`` 直接当 ``mom4``
+写库，随后又被 recompute 用另一个错口径覆盖（docs/45 报告 P0-2 / docs/04 §5）。
 """
 import csv, os, sqlite3, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
-from shikar import pipeline, storage, scoring  # noqa: E402
+from shikar import storage  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 
@@ -184,7 +190,7 @@ def main():
             cur_by_key[k] = r
 
     xiaoqu = {}   # id -> meta
-    metrics = []  # (xid, week, price, supply, mom4)
+    metrics = []  # (xid, week, price, supply)
 
     def add_xq(xid, city, district, plate, name, build_year=None, lng=None, lat=None):
         if xid not in xiaoqu:
@@ -195,11 +201,7 @@ def main():
     for r in cur:
         xid = f'{r["city"]}|{r["xiaoqu_id"]}'
         add_xq(xid, r["city"], r["district"], r.get("plate") or None, r["xiaoqu_name"], to_int(r.get("built_year")))
-        mom = None
-        pct = to_float(r.get("mom1_pct"))
-        if pct is not None:
-            mom = pct / 100.0
-        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), to_int(r.get("supply")), mom))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), to_int(r.get("supply"))))
 
     # 2019 历史
     matched = 0
@@ -217,19 +219,11 @@ def main():
         else:
             xid = f'{city}|2019|{r["xiaoqu_id"]}'
             add_xq(xid, city, r["district"], r.get("plate") or None, name, lng=lng, lat=lat)
-        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), None, None))
+        metrics.append((xid, (r["week"] or "").strip(), to_float(r["price"]), None))
 
-    # —— 数据充足度：统一使用 shikar.pipeline.is_sufficient（docs/04 §2.2）——
-    # 门槛只保留一份实现：build_db 与 pipeline.recompute 共用，避免两条写入路径漂移。
-    # 任一不满足（<3 期 / 跨度 <365 天 / 缺口 >365 天）→ 不写温度与阶段。
-    weeks_by = {}
-    for xid, week, price, supply, mom in metrics:
-        weeks_by.setdefault(xid, set()).add(week)
-
-    city_mom = {}
-    for xid, week, price, supply, mom in metrics:
-        if pipeline.is_sufficient(weeks_by.get(xid, set())) and mom is not None:
-            city_mom.setdefault(xiaoqu[xid]["city"], []).append(mom)
+    # 派生指标（mom4 / absorb / temperature / stage）不在本脚本计算，一律交给
+    # scripts/recompute_metrics.py（shikar.pipeline.recompute）：门槛与口径只有
+    # 一份实现，避免 build_db 与 recompute 两条写入路径互相覆盖（docs/45 P0-2）。
 
     db = os.path.join(DATA, "shikar.db")
     # POI 数据没有外部 CSV 来源（由 build_poi.py / osm_poi.py / fetch_hsr.py 采集入库），
@@ -255,19 +249,14 @@ def main():
         for m in xiaoqu.values():
             storage.upsert_xiaoqu(conn, m)
 
-        n_metric = 0; n_temp = 0
-        for xid, week, price, supply, mom in metrics:
-            temp = None; stage = None
-            if pipeline.is_sufficient(weeks_by.get(xid, set())) and current_week is not None and week == current_week:
-                n_mom = 50.0 if mom is None else scoring.percentile_normalize(mom, city_mom.get(xiaoqu[xid]["city"], []))
-                temp = scoring.compute_temperature({"mom4": n_mom, "absorb": 50.0, "bargain": 50.0, "heat": 50.0})
-                stage = scoring.classify_stage(temp, mom if mom is not None else 0.0)
-                n_temp += 1
+        n_metric = 0
+        for xid, week, price, supply in metrics:
+            # 派生列留空：统一由 recompute_metrics.py 计算（口径只有一份）。
             storage.upsert_metric(conn, {
                 "xiaoqu_id": xid, "week": week, "price": price, "supply": supply,
                 "vol30": None, "bargain": None, "heat": None,
-                "mom4": mom, "mom13": None, "absorb": None,
-                "temperature": temp, "stage": stage,
+                "mom4": None, "mom13": None, "absorb": None,
+                "temperature": None, "stage": None,
             })
             n_metric += 1
 
@@ -283,7 +272,7 @@ def main():
                 sys.exit(f"{t} 回灌数量异常：备份 {len(rows)} 行，写入 {n_extra[t]} 行；已保留旧库不动")
 
         extra_desc = "".join(f" {t}={n_extra[t]}" for t in sorted(n_extra))
-        print(f"xiaoqu={len(xiaoqu)} metrics={n_metric} matched2019={matched} temp_rows={n_temp} "
+        print(f"xiaoqu={len(xiaoqu)} metrics={n_metric} matched2019={matched} "
               f"poi={n_poi} community_poi={n_rel}{extra_desc}")
         for row in conn.execute("SELECT city, COUNT(*) c FROM xiaoqu GROUP BY city"):
             print(f"  {row['city']}: {row['c']}")

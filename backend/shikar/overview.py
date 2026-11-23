@@ -104,7 +104,9 @@ def _prev_row(series: list[dict], latest_index: int) -> tuple[Optional[dict], Op
     """取最新行之前、最近一条 ``temperature`` 非空的行与其**观测序号差**。
 
     序号差 = ``latest_index - prev_index``（按序列下标，不解析周字符串）。
-    与 ``mom4`` 的「前第 4 条记录」口径一致：比较的是观测，不是日历周。
+    这是「上一期温度快照」的取法，用于首页「较上期」的均温差；
+    与 ``mom4``（按日历差 28±7 天对齐，见 ``pipeline._mom4_series``）
+    **不是同一个口径**，两者不能互相替代。
 
     :return: ``(prev_row, gap)``；没有上期时返回 ``(None, None)``。
     """
@@ -307,7 +309,7 @@ def compute_overview(
                 "delta_count": len(delta_sums),
                 "delta_insufficient": delta_missing,
                 "delta_insufficient_ratio": (
-                    round(delta_missing / len(items), 3) if items else 0.0
+                    round(delta_missing / len(items), 4) if items else 0.0
                 ),
                 "districts": districts_out,
                 "readings": readings_out,

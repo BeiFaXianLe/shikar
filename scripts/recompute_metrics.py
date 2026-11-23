@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """全量重算并回写派生指标（mom4 / absorb / temperature / stage）。
 
-背景：``build_db.py`` 建库时只对极少数（2026-W46 且历史充足）小区算温度，
-``ingest_history.py`` 灌历史时明确不计算温度/阶段（写 NULL）。若不补这一步，
-``xiaoqu_metric_weekly.temperature`` 会大面积 NULL，导致首页 ``/api/overview``
-聚合为空、页面空白。
+背景：``build_db.py`` 只写原始数据，``mom4`` / ``absorb`` / ``temperature`` /
+``stage`` 一律留空（口径只有一份实现，避免两个写入方各算一套）。本脚本是
+派生指标的唯一计算入口：不做这一步，``xiaoqu_metric_weekly.temperature``
+会全部为 NULL，导致首页 ``/api/overview`` 聚合为空、页面空白。
 
 本脚本调用 ``shikar.pipeline.recompute`` 对全部（或指定）小区重算并回写，
 不重建库、不删除/不改动 POI 与地铁表，可安全重复执行（幂等）。
