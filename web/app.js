@@ -404,6 +404,45 @@
       .catch(function () { return []; });
   }
 
+  /** 上次搜索关键词（sessionStorage）：回首页时回填，失败时为空串。 */
+  var LAST_SEARCH_KEY = "shikar.last-search";
+
+  function rememberSearch(q) {
+    try { sessionStorage.setItem(LAST_SEARCH_KEY, q || ""); } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  function recallSearch() {
+    try { return sessionStorage.getItem(LAST_SEARCH_KEY) || ""; } catch (e) { return ""; }
+  }
+
+  /**
+   * 首页 hero 搜索框（F-01）：空词→``#/catalog``，有词→``#/catalog?q=``。
+   *
+   * 用 ``<form role="search">`` 提交，回车与按钮走同一条路径；关键词记入
+   * sessionStorage，从结果页返回首页时回填。
+   */
+  function heroSearchForm() {
+    var input = el("input", {
+      type: "search", id: "hero-q", name: "q", autocomplete: "off",
+      placeholder: "搜索小区名称或地址…", "aria-label": "搜索小区名称或地址",
+      value: recallSearch(),
+    });
+    var form = el("form", {
+      class: "hero-search", id: "hero-search", role: "search",
+      action: "#/catalog", "aria-label": "搜索小区",
+    }, [input, el("button", { type: "submit", text: "搜索" })]);
+
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var q = (input.value || "").trim();
+      rememberSearch(q);
+      var target = q ? "#/catalog?q=" + encodeURIComponent(q) : "#/catalog";
+      if (window.location.hash === target) route();
+      else window.location.hash = target;
+    });
+    return form;
+  }
+
   function renderOverview() {
     appEl.innerHTML = "";
     appEl.appendChild(stateNode("loading", "正在加载总览…"));
@@ -424,6 +463,7 @@
                 (data && data.week ? "数据周 " + data.week + " · " : "") +
                 "京津小区价格、温度与阶段信号，每周一次快照。",
             }),
+            heroSearchForm(),
             el("div", { class: "hero-actions" }, [
               el("a", { class: "hero-cta primary", href: "#/catalog", text: "浏览小区目录 →" }),
               el("a", { class: "hero-cta", href: "#/commute", text: "双点通勤" }),
@@ -908,6 +948,25 @@
       ])
     );
 
+    // —— 搜索词提示条（F-01）：有词时显示「搜索：XX」并可清空 ——
+    var qHintSlot = el("div", { class: "find-qhint-slot" });
+    appEl.appendChild(qHintSlot);
+
+    function renderQHint() {
+      qHintSlot.innerHTML = "";
+      if (!findState.q) return;
+      var bar = el("div", { class: "poi-query-hint", id: "find-qhint" }, [
+        el("span", { text: "搜索：" + findState.q }),
+        el("button", { class: "poi-tab", type: "button", text: "清空" }),
+      ]);
+      bar.querySelector("button").addEventListener("click", function () {
+        findState.q = "";
+        findState.page = 1;
+        refreshAll();
+      });
+      qHintSlot.appendChild(bar);
+    }
+
     // —— 三主筛选 ——
     var citySelect = el("select", { class: "ff-select", "aria-label": "城市" }, [
       el("option", { value: "", text: "全部城市" }),
@@ -1188,16 +1247,22 @@
     function refreshAll() {
       syncMainControls();
       renderChips();
+      renderQHint();
       syncFindHash();
       loadPage();
     }
 
     function syncFindHash() {
       // 用 replaceState 同步可分享链接，避免触发 hashchange 重渲染。
+      // 返回栈里当前页的那一格跟着改，否则「按来路返回」会认不出上一页。
       try {
         var qs = findQueryString().replace(/^\?/, "");
-        history.replaceState(null, "", "#/catalog" + (qs ? "?" + qs : ""));
+        var target = "#/catalog" + (qs ? "?" + qs : "");
+        history.replaceState(null, "", target);
+        navStackReplaceTop(target);
       } catch (e) { /* 忽略（历史 API 不可用时不影响功能） */ }
+      // 记住关键词（只记非空：回首页要回填的是「上次搜索词」）。
+      if (findState.q) rememberSearch(findState.q);
     }
 
     // —— 事件：主筛选 ——
@@ -1223,6 +1288,7 @@
     // 首次：先补齐地铁线路缓存，再渲染 chips 与结果。
     loadSubwayLines(findState.city).then(function () {
       renderChips();
+      renderQHint();
       loadPage();
       // 深链演示：带 ?drawer=1 时自动打开「更多条件」抽屉。
       if (findHashHasFlag("drawer")) { try { openDrawer(); } catch (e) {} }
@@ -1529,7 +1595,7 @@
   // -------------------------------------------------------------------------
   function renderDetail(id) {
     appEl.innerHTML = "";
-    appEl.appendChild(backLink("#/catalog", "← 返回目录"));
+    appEl.appendChild(navBackLink());
     appEl.appendChild(stateNode("loading", "正在加载小区详情…"));
 
     var detailP = getJSON("/api/xiaoqu/" + encodeURIComponent(id));
@@ -1542,7 +1608,8 @@
         var series = Array.isArray(res[1]) ? res[1] : [];
         var signals = Array.isArray(res[2]) ? res[2] : [];
         appEl.innerHTML = "";
-        appEl.appendChild(backLink("#/catalog", "← 返回目录"));
+        navStackRetitle(currentHash(), detail && detail.name);
+        appEl.appendChild(navBackLink());
         appEl.appendChild(renderDetailHead(detail, series));
         var compareNode = renderTwoPeriodCompare(series);
         if (compareNode) appEl.appendChild(compareNode);
@@ -1552,7 +1619,7 @@
       })
       .catch(function (err) {
         appEl.innerHTML = "";
-        appEl.appendChild(backLink("#/catalog", "← 返回目录"));
+        appEl.appendChild(navBackLink());
         appEl.appendChild(stateNode("error", "加载失败：" + err.message));
       });
   }
@@ -2231,6 +2298,122 @@
     });
   }
 
+  // -------------------------------------------------------------------------
+  // 返回栈（F-02）：只记「站内来路」，用于按来路返回
+  // -------------------------------------------------------------------------
+  // 只存 hash + 标题（不存内容），落在 sessionStorage：同标签页内有效、新标签页不串。
+  var NAV_STACK_KEY = "shikar.nav-stack";
+  var navStackReset = false; // 兜底 replace 之后，下一跳把栈重置为新起点
+  var renderedHash = "";     // 最近一次已渲染的 hash（判断 replace 有没有触发 hashchange）
+
+  function currentHash() { return window.location.hash || "#/"; }
+
+  function navStackGet() {
+    try {
+      var raw = sessionStorage.getItem(NAV_STACK_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (e) { return e && typeof e.hash === "string"; });
+    } catch (e) { return []; }
+  }
+
+  function navStackSet(arr) {
+    try { sessionStorage.setItem(NAV_STACK_KEY, JSON.stringify(arr.slice(-30))); }
+    catch (e) { /* 隐私模式：退化为「直接回目录」，不影响功能 */ }
+  }
+
+  /** 从 hash 推页面标题；小区详情名要等接口返回后再回填（见 navStackRetitle）。 */
+  function hashTitle(hash) {
+    if (hash.indexOf("#/catalog") === 0) return "小区目录";
+    if (hash.indexOf("#/xiaoqu/") === 0) return "小区详情";
+    if (typeof POI_CFG !== "undefined") {
+      if (hash.indexOf("#/schools") === 0) return POI_CFG.school.title;
+      if (hash.indexOf("#/hospitals") === 0) return POI_CFG.hospital.title;
+      if (hash.indexOf("#/hsr") === 0) return POI_CFG.hsr.title;
+    }
+    if (hash.indexOf("#/commute") === 0) return "双点通勤";
+    return "总览";
+  }
+
+  /** 每次 hash 变化同步来路栈：后退则弹出，前进则压入。 */
+  function navStackSync(hash) {
+    var s = navStackGet();
+    if (navStackReset) {
+      navStackReset = false;
+      navStackSet([{ hash: hash, title: hashTitle(hash) }]);
+      return;
+    }
+    if (s.length >= 2 && s[s.length - 2].hash === hash) { s.pop(); navStackSet(s); return; }
+    if (!s.length || s[s.length - 1].hash !== hash) {
+      s.push({ hash: hash, title: hashTitle(hash) });
+      navStackSet(s);
+    }
+  }
+
+  /** replaceState 换了当前 URL：栈顶跟着换，否则来路判断会认错上一页。 */
+  function navStackReplaceTop(hash) {
+    var s = navStackGet();
+    if (!s.length) { navStackSet([{ hash: hash, title: hashTitle(hash) }]); return; }
+    var prev = s[s.length - 1];
+    var samePage = prev.hash.split("?")[0] === hash.split("?")[0];
+    s[s.length - 1] = {
+      hash: hash,
+      title: (samePage && prev.title) || hashTitle(hash),
+    };
+    navStackSet(s);
+  }
+
+  /** 详情页拿到真实名称后回填栈顶标题，供下一页的「← 返回 <标题>」使用。 */
+  function navStackRetitle(hash, title) {
+    if (!title) return;
+    var s = navStackGet();
+    if (s.length && s[s.length - 1].hash === hash) {
+      s[s.length - 1].title = title;
+      navStackSet(s);
+    }
+  }
+
+  /** 上一页（无站内来路时为 null）。 */
+  function navPrev() {
+    var s = navStackGet();
+    return s.length >= 2 ? s[s.length - 2] : null;
+  }
+
+  function navBackTarget() {
+    var prev = navPrev();
+    return prev && prev.hash ? prev.hash : "#/catalog";
+  }
+
+  function navBackLabel() {
+    var prev = navPrev();
+    return prev && prev.title ? "← 返回 " + prev.title : "← 返回目录";
+  }
+
+  /**
+   * 返回：有站内来路就 ``history.back()`` 真回退（A → B 后回到 A）；
+   * 没来路（如直接打开分享链接）就兜底 ``replace`` 到目录——不退出站点、不白屏，
+   * 也不把深链留在返回栈里。
+   */
+  function navGoBack() {
+    var s = navStackGet();
+    if (s.length >= 2) { history.back(); return; }
+    navStackReset = true;
+    location.replace("#/catalog");
+    // 个别浏览器 replace 到同文档 hash 不触发 hashchange：兜底手动渲染一次。
+    setTimeout(function () { if (renderedHash !== currentHash()) route(); }, 0);
+  }
+
+  /** 详情页返回链接：按来路回退；中键/新窗口仍走 href（有来路时指向上一页）。 */
+  function navBackLink() {
+    var a = el("a", { class: "back", href: navBackTarget(), text: navBackLabel() });
+    a.addEventListener("click", function (ev) {
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
+      navGoBack();
+    });
+    return a;
+  }
+
   function parseHash() {
     var raw = window.location.hash || "#/";
     var path = raw.replace(/^#/, "");
@@ -2251,6 +2434,9 @@
 
   function route() {
     var r = parseHash();
+    var hash = currentHash();
+    navStackSync(hash);
+    renderedHash = hash;
     if (r.name === "home") {
       renderOverview();
     } else if (r.name === "catalog") {

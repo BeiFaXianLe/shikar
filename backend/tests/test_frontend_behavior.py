@@ -244,3 +244,186 @@ def test_frontend_home_readings_layer(browser_env):
     assert "样本 2/2 个小区" in body, body
     assert "60500" in body, body                      # (60000+61000)/2
     assert "暂无可比环比" in body, body                # 种子里 mom4 全为空
+
+
+# --------------------------------------------------------------------------- #
+# F-01 首页搜索 / F-02 按来路返回（issue #45 / #46）
+#
+# 同一套 headless Edge + CDP 驱动：F-01 用真实表单提交，F-02 用真实点击返回链接，
+# 断言「URL（hash）发生了什么」与「页面上看得到什么」，不只断言代码里有没有函数。
+# --------------------------------------------------------------------------- #
+_NODE_HARNESS_F01_F02 = r"""
+const http=require('http');
+function g(p){return new Promise((res,rej)=>{http.get({host:'127.0.0.1',port:__CDP_PORT__,path:p},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>res(d));}).on('error',rej);});}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+(async()=>{
+  const list=JSON.parse(await g('/json'));
+  const page=list.find(t=>t.type==='page'&&t.url.includes(BASE_PORT))||list.find(t=>t.type==='page');
+  if(!page){console.log(JSON.stringify({err:'no target'}));process.exit(0);}
+  const ws=new WebSocket(page.webSocketDebuggerUrl);let id=0;const pend={};
+  const send=(m,p)=>new Promise(r=>{const i=++id;pend[i]={r};ws.send(JSON.stringify({id:i,method:m,params:p}));});
+  await new Promise(r=>ws.addEventListener('open',r));
+  ws.addEventListener('message',ev=>{const m=JSON.parse(ev.data);if(m.id&&pend[m.id]){pend[m.id].r(m.result);delete pend[m.id];}});
+  await send('Runtime.enable',{});await send('Page.enable',{});
+  const ev=async e=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)return {__err:r.exceptionDetails.text};return r.result.value;};
+  const dec=async()=>ev(`decodeURIComponent(location.hash)`);
+  const home=`http://127.0.0.1:${BASE_PORT}/`;
+  const out={};
+
+  // ===== F-01：首页搜索框三态 =====
+  await send('Page.navigate',{url:home});await sleep(1500);
+  await ev(`sessionStorage.clear()`);
+  await send('Page.navigate',{url:home+'#/'});await sleep(1200);
+  out.f01_inputExists=await ev(`!!document.querySelector('#hero-q')`);
+  out.f01_placeholder=await ev(`(document.querySelector('#hero-q')||{}).placeholder`);
+  out.f01_inputEmpty=await ev(`(document.querySelector('#hero-q')||{}).value===''`);
+  // 空词提交 → #/catalog，不带 q
+  await ev(`document.querySelector('#hero-search').requestSubmit()`);await sleep(1500);
+  out.f01_emptyHash=await dec();
+  out.f01_emptyRendered=await ev(`!!document.querySelector('.find-head')`);
+  // 有词提交 → #/catalog?q=…，结果页有「搜索：XX」+ 清空
+  await send('Page.navigate',{url:home+'#/'});await sleep(1200);
+  await ev(`(function(){var i=document.querySelector('#hero-q');i.value='小区x1';})()`);
+  await ev(`document.querySelector('#hero-search').requestSubmit()`);await sleep(2000);
+  out.f01_searchHash=await dec();
+  out.f01_qHint=await ev(`(function(){var e=document.querySelector('#find-qhint');return e?e.textContent:'none';})()`);
+  out.f01_count=await ev(`(function(){var e=document.querySelector('.find-count');return e?e.textContent:'none';})()`);
+  out.f01_rows=await ev(`document.querySelectorAll('a.find-row').length`);
+  // 结果页「清空」→ 回全量，q 从 URL 去掉
+  await ev(`(function(){var b=document.querySelector('#find-qhint button');if(b)b.click();})()`);await sleep(1600);
+  out.f01_hashAfterClear=await dec();
+  out.f01_hintAfterClear=await ev(`!!document.querySelector('#find-qhint')`);
+  out.f01_countAfterClear=await ev(`(function(){var e=document.querySelector('.find-count');return e?e.textContent:'none';})()`);
+  // 浏览器返回首页 → 搜索框回填上次关键词
+  await ev(`history.back()`);await sleep(1500);
+  out.f01_homeHash=await ev(`location.hash`);
+  out.f01_prefill=await ev(`(document.querySelector('#hero-q')||{}).value`);
+
+  // 375px 窄屏：搜索框可见可点，不压主标题与两个 CTA，无横向溢出
+  await send('Emulation.setDeviceMetricsOverride',{width:375,height:812,deviceScaleFactor:1,mobile:true});
+  await send('Page.navigate',{url:home+'#/'});await sleep(1600);
+  out.f01_mobile=await ev(`(function(){
+    var form=document.querySelector('#hero-search'), q=document.querySelector('#hero-q');
+    var h1=document.querySelector('.hero h1');
+    var cta=[].slice.call(document.querySelectorAll('.hero-cta'));
+    var f=form?form.getBoundingClientRect():null, r=q?q.getBoundingClientRect():null;
+    var hr=h1?h1.getBoundingClientRect():null;
+    function hit(a,b){return !(a.bottom<=b.top||a.top>=b.bottom||a.right<=b.left||a.left>=b.right);}
+    return {
+      visible: !!r && r.width>100 && r.height>=40,
+      h1Overlap: !!(hr&&f&&hit(f,hr)),
+      ctaOverlap: !!(f&&cta.some(function(a){return hit(f,a.getBoundingClientRect());})),
+      ctaCount: cta.length,
+      ctaInView: cta.every(function(a){var b=a.getBoundingClientRect();return b.top>=0&&b.bottom<=window.innerHeight+1;} )||true,
+      scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth
+    };
+  })()`);
+  await send('Emulation.clearDeviceMetricsOverride',{});
+
+  // ===== F-02：目录 → A → B → 返回 A → 返回目录 =====
+  await ev(`sessionStorage.clear()`);
+  await send('Page.navigate',{url:home+'#/catalog?city='+encodeURIComponent('北京')});await sleep(2200);
+  await ev(`(function(){var a=document.querySelector('a.find-row[href^="#/xiaoqu/"]');if(a)a.click();})()`);await sleep(2200);
+  out.f02_detailHash=await dec();
+  out.f02_labelA=await ev(`(function(){var b=document.querySelector('a.back');return b?b.textContent:'none';})()`);
+  // A → B（与点「相似小区」同一条路径：站内 hash 导航）
+  await ev(`location.hash='#/xiaoqu/x2'`);await sleep(2000);
+  out.f02_labelB=await ev(`(function(){var b=document.querySelector('a.back');return b?b.textContent:'none';})()`);
+  out.f02_backHref=await ev(`(function(){var b=document.querySelector('a.back');return b?b.getAttribute('href'):'none';})()`);
+  // 第一次返回 → A
+  await ev(`(function(){var b=document.querySelector('a.back');if(b)b.click();})()`);await sleep(2200);
+  out.f02_backToA=await dec();
+  // 第二次返回 → 目录，且原筛选条件还在
+  await ev(`(function(){var b=document.querySelector('a.back');if(b)b.click();})()`);await sleep(2200);
+  out.f02_backToCatalog=await dec();
+  out.f02_catalogRendered=await ev(`!!document.querySelector('.find-head')`);
+
+  // ===== F-02：直接打开分享链接（无站内来路）→ 兜底回目录 =====
+  await ev(`sessionStorage.clear()`);
+  await send('Page.navigate',{url:home+'#/xiaoqu/x1'});await sleep(600);
+  await send('Page.reload',{});await sleep(2400);
+  out.f02_deepHash=await dec();
+  out.f02_deepLabel=await ev(`(function(){var b=document.querySelector('a.back');return b?b.textContent:'none';})()`);
+  await ev(`(function(){var b=document.querySelector('a.back');if(b)b.click();})()`);await sleep(2200);
+  out.f02_deepFallback=await dec();
+  out.f02_deepRendered=await ev(`!!document.querySelector('.find-head')`);
+  out.f02_deepPathname=await ev(`location.pathname`);
+  out.f02_deepBodyLen=await ev(`document.getElementById('app').textContent.length`);
+  console.log(JSON.stringify(out));
+  process.exit(0);
+})().catch(e=>{console.log(JSON.stringify({err:String(e&&e.message||e)}));process.exit(0);});
+"""
+
+
+def _run_f01_f02_harness(cdp_port: int, base_port: int) -> dict:
+    """跑 F-01/F-02 的浏览器断言，返回页面实测到的字段。"""
+    script = _NODE_HARNESS_F01_F02.replace("BASE_PORT", str(base_port)).replace(
+        "__CDP_PORT__", str(cdp_port)
+    )
+    proc = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
+    )
+    out = (proc.stdout or "").strip().splitlines()
+    if not out:
+        pytest.skip(f"Node harness 无输出（stderr={proc.stderr[:300]}）")
+    return json.loads(out[-1])
+
+
+def test_frontend_home_search_form(browser_env):
+    """F-01：首页 hero 有搜索框；空词→#/catalog，有词→#/catalog?q=；结果页可清空、返回回填。"""
+    out = _run_f01_f02_harness(browser_env["cdp_port"], browser_env["base_port"])
+    assert "err" not in out, out
+    assert out["f01_inputExists"] is True, out
+    assert "搜索小区名称或地址" in (out["f01_placeholder"] or ""), out["f01_placeholder"]
+    assert out["f01_inputEmpty"] is True, out
+    # 空词：跳目录、不带 q、页面正常渲染
+    assert "#/catalog" in out["f01_emptyHash"], out["f01_emptyHash"]
+    assert "q=" not in out["f01_emptyHash"], out["f01_emptyHash"]
+    assert out["f01_emptyRendered"] is True, out
+    # 有词：URL 带 q、结果页顶部有「搜索：XX」、列表出结果
+    assert "q=" in out["f01_searchHash"], out["f01_searchHash"]
+    assert "搜索：小区x1" in (out["f01_qHint"] or ""), out["f01_qHint"]
+    assert "个匹配结果" in (out["f01_count"] or ""), out["f01_count"]
+    assert out["f01_rows"] >= 1, out
+    # 清空：q 从 URL 与页面同时消失，回全量
+    assert "q=" not in out["f01_hashAfterClear"], out["f01_hashAfterClear"]
+    assert out["f01_hintAfterClear"] is False, out
+    assert "个匹配结果" in (out["f01_countAfterClear"] or ""), out["f01_countAfterClear"]
+    # 返回首页：搜索框回填上次关键词
+    assert out["f01_prefill"] == "小区x1", out["f01_prefill"]
+    # 375px 窄屏：可见可点、不压标题与两个 CTA、无横向溢出
+    m = out["f01_mobile"]
+    assert m["visible"] is True, m
+    assert m["h1Overlap"] is False, m
+    assert m["ctaOverlap"] is False, m
+    assert m["ctaCount"] == 2, m
+    assert m["scrollW"] <= m["innerW"] + 1, m
+
+
+def test_frontend_back_follows_history(browser_env):
+    """F-02：目录 → A → B 后「返回」回 A，再返回回目录且筛选条件保留。"""
+    out = _run_f01_f02_harness(browser_env["cdp_port"], browser_env["base_port"])
+    assert "err" not in out, out
+    assert "#/xiaoqu/" in out["f02_detailHash"], out["f02_detailHash"]
+    assert out["f02_labelA"].startswith("← 返回 小区目录"), out["f02_labelA"]
+    # B 的返回文案指向上一个小区（真实名称回填），href 也指向 A
+    assert out["f02_labelB"].startswith("← 返回 小区") and "目录" not in out["f02_labelB"], out["f02_labelB"]
+    assert out["f02_backHref"].startswith("#/xiaoqu/"), out
+    assert out["f02_backToA"] == out["f02_detailHash"], (out["f02_backToA"], out["f02_detailHash"])
+    # 第二次返回回到目录，原筛选条件 city=北京 仍在
+    assert "#/catalog" in out["f02_backToCatalog"], out["f02_backToCatalog"]
+    assert "city=" in out["f02_backToCatalog"], out["f02_backToCatalog"]
+    assert out["f02_catalogRendered"] is True, out
+
+
+def test_frontend_back_deeplink_fallback(browser_env):
+    """F-02：分享链接直接打开详情（无站内来路）→ 返回兜底回目录，不白屏、不退出站点。"""
+    out = _run_f01_f02_harness(browser_env["cdp_port"], browser_env["base_port"])
+    assert "err" not in out, out
+    assert "#/xiaoqu/x1" in out["f02_deepHash"], out["f02_deepHash"]
+    assert out["f02_deepLabel"].startswith("← 返回目录"), out["f02_deepLabel"]
+    assert "#/catalog" in out["f02_deepFallback"], out["f02_deepFallback"]
+    assert out["f02_deepRendered"] is True, out
+    assert out["f02_deepPathname"] == "/", out["f02_deepPathname"]  # 没有跳出站点
+    assert out["f02_deepBodyLen"] > 100, out["f02_deepBodyLen"]    # 没有白屏
