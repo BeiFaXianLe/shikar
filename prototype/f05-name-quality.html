@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#101820" />
+<title>F-05 原型 · 英文 / 纯数字名称的来历与处理</title>
+<link rel="stylesheet" href="../web/styles.css" />
+<style>
+  .proto-note {
+    margin: 22px 0 0; padding: 12px 16px; font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-soft); background: rgba(210, 170, 109, 0.07);
+    border-left: 2px solid var(--gold); border-radius: var(--r-sm);
+  }
+  .proto-note b { color: var(--gold); font-weight: 600; }
+  .proto-note code { font-family: var(--mono); font-size: 12px; color: var(--ivory); }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 22px; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 18px 20px; box-shadow: var(--shadow-card);
+  }
+  .stat .k { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; }
+  .stat .v { font-family: var(--serif); font-size: 30px; font-weight: 700; line-height: 1.2; margin-top: 4px; }
+  .stat .v .unit { font-family: var(--sans); font-size: 13px; color: var(--ink-soft); font-weight: 500; }
+  .stat .note { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+  .stat.gold .v { color: var(--gold); }
+  .stat.hot .v { color: var(--hot); }
+
+  .src-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 6px 0 20px; }
+  .src-table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 13px; }
+  .src-table th, .src-table td { border-bottom: 1px solid var(--rule); padding: 9px 10px; text-align: left; vertical-align: top; }
+  .src-table th { color: var(--gold); font-weight: 600; font-size: 12px; letter-spacing: 0.06em; white-space: nowrap; }
+  .src-table td.num { font-family: var(--mono); white-space: nowrap; }
+
+  .name-list { list-style: none; margin: 0; padding: 0; }
+  .name-item {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 9px 4px; border-bottom: 1px dotted rgba(245, 239, 227, 0.10);
+  }
+  .name-item:last-child { border-bottom: none; }
+  .name-raw { font-family: var(--sans); font-size: 15px; color: var(--ivory); min-width: 12em; }
+  .name-tag {
+    font-size: 11px; padding: 1px 8px; border-radius: var(--r-pill);
+    border: 1px solid currentColor; color: var(--ink-faint);
+  }
+  .name-tag.mix { color: var(--gold); }
+  .name-tag.pure { color: var(--hot); }
+  .name-tag.addr { color: var(--cold); }
+  .name-why { font-size: 12.5px; color: var(--ink-soft); flex: 1 1 16em; }
+  .name-src { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+
+  .opt { margin-top: 8px; }
+  .opt li { margin: 6px 0; font-size: 13px; color: var(--ink-soft); }
+  .opt b { color: var(--ivory); }
+  .pill-ok { color: #7fc4b0; }
+  .pill-no { color: var(--hot); }
+  @media (max-width: 720px) {
+    .stat-grid { grid-template-columns: 1fr; }
+    .src-table { font-size: 12px; }
+    .src-table th, .src-table td { padding: 7px 6px; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/">shikar · 京津小区行情观测</a>
+    <span class="week">F-05 原型 · 真实统计</span>
+  </div>
+  <nav class="mainnav">
+    <a href="#/">总览</a>
+    <a href="#/catalog">找小区</a>
+  </nav>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer"><span>统计基于线上库 17439 个小区</span></footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // 真实统计（线上 /api/catalog 全量拉取 17439 条后分类）
+  var STATS = { total: 17439, cnOnly: 14881, cnMixed: 2555, latOnly: 3 };
+
+  var SOURCES = [
+    {
+      src: "lianjia2019", label: "链家 2019 全量快照（公开数据集）",
+      rows: 16624, mixed: 2519, pure: 3,
+      note: "早期链家页面的原始小区名，含大量「XX号院」「XX号楼」这类地址式命名，以及 B 区 / C 区 / MOMA / SOHO 等楼盘英文案名。"
+    },
+    {
+      src: "fang.com", label: "房天下 2026 当期快照（公开聚合页）",
+      rows: 3830, mixed: 77, pure: 0,
+      note: "案名保留得更完整，中英混合多是真实案名（唐宁ONE、远洋LAVIE），不是脏数据。"
+    }
+  ];
+
+  var SAMPLES = [
+    { name: "珠江帝景B区", tag: ["mix", "中英混合"], why: "楼盘分区的标准写法，B 区是真名，不是脏数据", src: "链家2019" },
+    { name: "唐宁ONE", tag: ["mix", "中英混合"], why: "真实案名（房天下也这么写）", src: "房天下2026" },
+    { name: "UHN国际村", tag: ["mix", "中英混合"], why: "真实案名", src: "链家2019" },
+    { name: "合生霄云路8号", tag: ["mix", "含数字"], why: "门牌号即案名的一部分", src: "链家2019" },
+    { name: "西坝河北里25号院", tag: ["addr", "地址式"], why: "老小区没有正式案名，链家按地址登记", src: "链家2019" },
+    { name: "11站", tag: ["addr", "地址式"], why: "同上，地址截断后的残留", src: "链家2019" },
+    { name: "CLASS", tag: ["pure", "纯英文"], why: "链家原库名就残缺，只剩英文后缀", src: "链家2019" },
+    { name: "LOFTEL", tag: ["pure", "纯英文"], why: "同上", src: "链家2019" },
+    { name: "Wehouse", tag: ["pure", "纯英文"], why: "同上", src: "链家2019" }
+  ];
+
+  var app = document.getElementById("app");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function pct(n, d) { return (n / d * 100).toFixed(1) + "%"; }
+
+  function render() {
+    var s = STATS;
+    app.innerHTML =
+      '<div class="page-head">' +
+        '<h1>英文 / 纯数字名称是怎么来的</h1>' +
+        '<span class="sub">线上库 ' + s.total + ' 个小区 · 全量分类</span>' +
+      '</div>' +
+
+      '<div class="stat-grid">' +
+        '<div class="stat">' +
+          '<div class="k">纯中文名</div>' +
+          '<div class="v">' + s.cnOnly.toLocaleString("en-US") + '<span class="unit"> 个</span></div>' +
+          '<div class="note">占 ' + pct(s.cnOnly, s.total) + '，正常</div>' +
+        '</div>' +
+        '<div class="stat gold">' +
+          '<div class="k">中英 / 含数字</div>' +
+          '<div class="v">' + s.cnMixed.toLocaleString("en-US") + '<span class="unit"> 个</span></div>' +
+          '<div class="note">占 ' + pct(s.cnMixed, s.total) + '，多数是真实案名</div>' +
+        '</div>' +
+        '<div class="stat hot">' +
+          '<div class="k">纯英文 / 纯数字</div>' +
+          '<div class="v">' + s.latOnly + '<span class="unit"> 个</span></div>' +
+          '<div class="note">占 ' + pct(s.latOnly, s.total) + '，源数据残缺</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<h2 class="section" style="border-top:none;padding-top:0"><span style="font-family:var(--serif);font-size:17px">两份数据源，各带一部分</span></h2>' +
+      '<div class="src-wrap"><table class="src-table">' +
+        '<tr><th>来源</th><th>条数</th><th>中英/含数字</th><th>纯英文</th><th>说明</th></tr>' +
+        SOURCES.map(function (x) {
+          return '<tr>' +
+            '<td>' + esc(x.label) + '<br><span class="name-src">' + esc(x.src) + '</span></td>' +
+            '<td class="num">' + x.rows.toLocaleString("en-US") + '</td>' +
+            '<td class="num">' + x.mixed + '</td>' +
+            '<td class="num">' + x.pure + '</td>' +
+            '<td>' + esc(x.note) + '</td>' +
+          '</tr>';
+        }).join("") +
+      '</table></div>' +
+
+      '<h2 style="font-family:var(--serif);font-size:17px;margin:0 0 4px">逐条看几个</h2>' +
+      '<ul class="name-list">' +
+        SAMPLES.map(function (x) {
+          return '<li class="name-item">' +
+            '<span class="name-raw">' + esc(x.name) + '</span>' +
+            '<span class="name-tag ' + x.tag[0] + '">' + esc(x.tag[1]) + '</span>' +
+            '<span class="name-why">' + esc(x.why) + '</span>' +
+            '<span class="name-src">' + esc(x.src) + '</span>' +
+          '</li>';
+        }).join("") +
+      '</ul>' +
+
+      noteBlock();
+  }
+
+  function noteBlock() {
+    return '<p class="proto-note">' +
+      '<b>结论</b>：这些名字不是程序生成的，是<b>抓取源页面的原始名称</b>——链家 2019 那份公开数据集里，' +
+      '老小区没正式案名就按地址登记（「XX号院」「11站」），新盘直接写案名（「唐宁ONE」「UHN国际村」）。' +
+      '2555 条中英混合里绝大多数是<b>真实案名</b>，不该清洗；真正有问题的只有 3 条纯英文（CLASS / LOFTEL / Wehouse），' +
+      '是链家原库就残缺。' +
+      '<b>建议怎么处理</b>：' +
+      '<ul class="opt">' +
+        '<li><b>中英混合 + 含数字</b>：<span class="pill-ok">保留</span>。搜索时按「中文片段 / 英文片段 / 数字」都能命中即可（模糊查询已覆盖）。</li>' +
+        '<li><b>地址式名称</b>：<span class="pill-ok">保留但标注</span>。列表里加一个「地址」标记，用户知道这不是案名。</li>' +
+        '<li><b>纯英文残缺名（3 条）</b>：<span class="pill-no">不猜、不编</span>。留原样并标注「源数据名称不全」，或从源站补全后覆盖；<b>绝不自动拼凑</b>。</li>' +
+        '<li><b>拼音搜索</b>：仍按 <code>docs/16-Feature-Map.md</code> F4 的裁定，属后续里程碑，本期不做。</li>' +
+      '</ul>' +
+      '</p>';
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

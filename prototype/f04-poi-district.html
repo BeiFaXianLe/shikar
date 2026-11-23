@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#101820" />
+<title>F-04 原型 · 学校 / 医院 / 高铁站按区查找</title>
+<link rel="stylesheet" href="../web/styles.css" />
+<style>
+  .proto-note {
+    margin: 22px 0 0; padding: 12px 16px; font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-soft); background: rgba(210, 170, 109, 0.07);
+    border-left: 2px solid var(--gold); border-radius: var(--r-sm);
+  }
+  .proto-note b { color: var(--gold); font-weight: 600; }
+  .proto-note code { font-family: var(--mono); font-size: 12px; color: var(--ivory); }
+  .proto-note table { border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  .proto-note td, .proto-note th { border: 1px solid var(--rule); padding: 3px 10px; text-align: left; }
+  .proto-note th { color: var(--gold); font-weight: 600; }
+
+  /* 区域筛选：与既有 district-select 同一视觉语言，做成可多选的胶囊组 */
+  .district-chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 14px; }
+  .district-chips .lbl { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; margin-right: 2px; }
+  .dc {
+    font-family: var(--sans); font-size: 13px; color: var(--ivory);
+    background: rgba(245, 239, 227, 0.05); border: 1px solid var(--line-strong);
+    border-radius: var(--r-pill); padding: 4px 13px; cursor: pointer;
+  }
+  .dc:hover { border-color: var(--gold); color: var(--gold); }
+  .dc.on { background: var(--gold); border-color: var(--gold); color: #101820; font-weight: 600; }
+  .dc .n { font-family: var(--mono); font-size: 11px; opacity: 0.72; margin-left: 4px; }
+
+  /* 「大众点评式」：区域 + 排序 两行筛选，结果实时收敛 */
+  .dp-bar { display: flex; flex-direction: column; gap: 6px; padding: 10px 0 12px; border-bottom: 1px solid var(--rule); margin-bottom: 4px; }
+  .dp-row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .dp-row > .k { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; flex: 0 0 3.4em; }
+  .dp-link {
+    font-family: var(--sans); font-size: 13px; color: var(--ink-soft);
+    background: none; border: none; padding: 2px 6px; cursor: pointer; border-radius: var(--r-sm);
+  }
+  .dp-link:hover { color: var(--gold); }
+  .dp-link.on { color: var(--gold); font-weight: 600; background: var(--gold-soft); }
+  .result-count { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); padding: 10px 0 4px; }
+  .poi-row { cursor: default; }
+  .coverage { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); padding: 6px 0 0; }
+  .coverage .bad { color: var(--hot); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/">shikar · 京津小区行情观测</a>
+    <span class="week">F-04 原型 · 假数据</span>
+  </div>
+  <nav class="mainnav">
+    <a href="#/">总览</a>
+    <a href="#/catalog">找小区</a>
+  </nav>
+</header>
+
+<main id="app" class="app"></main>
+
+<footer class="footer"><span>原型 · 数据均为假数据</span></footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // 假数据：刻意复刻线上真实分布——绝大多数条目没有区，少数区名格式不统一。
+  var DATA = {
+    school: [
+      { name: "中关村第一小学", district: "海淀", grade: "重点", n: 42 },
+      { name: "中关村第二小学", district: "海淀", grade: "重点", n: 38 },
+      { name: "朝阳实验小学", district: "朝阳", grade: "重点", n: 33 },
+      { name: "史家胡同小学", district: "东城", grade: "重点", n: 29 },
+      { name: "北京第二实验小学", district: "西城", grade: "重点", n: 47 },
+      { name: "丰台第五小学", district: "丰台", grade: "普通", n: 21 },
+      { name: "通州潞河中学", district: "通州", grade: "普通", n: 26 },
+      { name: "昌平第二中学", district: "昌平", grade: "普通", n: 18 },
+      { name: "DayStar Academy", district: "", grade: "普通", n: 300 },
+      { name: "HD00-0403-0016地块托幼用地", district: "", grade: "普通", n: 3 },
+      { name: "育英学校", district: "海淀区", grade: "重点", n: 35 },
+      { name: "芳草地国际学校", district: "Chaoyang 朝阳区", grade: "重点", n: 31 }
+    ],
+    hospital: [
+      { name: "北京协和医院", district: "东城", grade: "三甲", n: 120 },
+      { name: "中日友好医院", district: "朝阳", grade: "三甲", n: 96 },
+      { name: "北京大学第三医院", district: "海淀", grade: "三甲", n: 88 },
+      { name: "天坛医院", district: "丰台", grade: "三甲", n: 61 },
+      { name: "通州区潞河医院", district: "通州区", grade: "三甲", n: 44 },
+      { name: "石景山医院", district: "石景山区", grade: "三甲", n: 33 },
+      { name: "某社区门诊部", district: "", grade: "社区", n: 4 },
+      { name: "八里庄社区卫生服务中心", district: "", grade: "社区", n: 6 }
+    ],
+    hsr: [
+      { name: "北京南站", district: "丰台", grade: "", n: 300 },
+      { name: "北京西站", district: "丰台", grade: "", n: 285 },
+      { name: "北京站", district: "东城", grade: "", n: 210 },
+      { name: "清河站", district: "海淀", grade: "", n: 96 },
+      { name: "天津西站", district: "红桥", grade: "", n: 180 },
+      { name: "天津站", district: "河北", grade: "", n: 165 }
+    ]
+  };
+
+  // 标准化：把「朝阳区 / Chaoyang 朝阳区 / 朝阳」统一成「朝阳」，去掉「区」后缀。
+  function normDistrict(raw) {
+    if (!raw) return "";
+    var s = String(raw).trim();
+    // 取中文片段：优先匹配「XX区 / XX县」，否则去掉尾部「区」
+    var m = s.match(/([一-鿿]{2,4}?)(区|县)/);
+    if (m) return m[1];
+    s = s.replace(/[A-Za-z\s]/g, "").replace(/区$/, "");
+    return s;
+  }
+
+  var app = document.getElementById("app");
+  var type = "school";
+  var picked = {};          // district -> true
+  var sort = "count";       // count | name
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function rows() { return DATA[type]; }
+
+  function districts() {
+    var m = {};
+    rows().forEach(function (it) {
+      var d = normDistrict(it.district);
+      if (!d) return;
+      m[d] = (m[d] || 0) + 1;
+    });
+    return Object.keys(m).sort(function (a, b) { return m[b] - m[a]; }).map(function (d) {
+      return { d: d, n: m[d] };
+    });
+  }
+
+  function filtered() {
+    var list = rows();
+    var keys = Object.keys(picked).filter(function (k) { return picked[k]; });
+    if (keys.length) {
+      list = list.filter(function (it) { return keys.indexOf(normDistrict(it.district)) >= 0; });
+    }
+    list = list.slice();
+    if (sort === "count") list.sort(function (a, b) { return b.n - a.n; });
+    else list.sort(function (a, b) { return a.name.localeCompare(b.name, "zh"); });
+    return list;
+  }
+
+  function coverage() {
+    var all = rows();
+    var withD = all.filter(function (it) { return normDistrict(it.district); }).length;
+    var pct = all.length ? Math.round(withD / all.length * 100) : 0;
+    return { all: all.length, withD: withD, pct: pct };
+  }
+
+  function render() {
+    var ds = districts();
+    var list = filtered();
+    var cov = coverage();
+
+    app.innerHTML =
+      '<div class="page-head">' +
+        '<h1>' + (type === "school" ? "学校" : type === "hospital" ? "医院" : "高铁站") + '</h1>' +
+        '<div class="page-head-aside"><a class="catalog-entry" href="#/catalog">← 返回找小区</a></div>' +
+      '</div>' +
+      '<div class="poi-bar">' +
+        '<button class="poi-tab' + (type === "school" ? " on" : "") + '" data-type="school" type="button">学校</button>' +
+        '<button class="poi-tab' + (type === "hospital" ? " on" : "") + '" data-type="hospital" type="button">医院</button>' +
+        '<button class="poi-tab' + (type === "hsr" ? " on" : "") + '" data-type="hsr" type="button">高铁站</button>' +
+      '</div>' +
+
+      // 区域筛选（大众点评式：一行「区域」+ 一行「排序」）
+      '<div class="dp-bar">' +
+        '<div class="dp-row">' +
+          '<span class="k">区域</span>' +
+          '<button class="dp-link' + (Object.keys(picked).filter(function (k) { return picked[k]; }).length ? "" : " on") + '" data-district="" type="button">全部</button>' +
+          ds.map(function (x) {
+            return '<button class="dp-link' + (picked[x.d] ? " on" : "") + '" data-district="' + esc(x.d) + '" type="button">' +
+              esc(x.d) + '</button>';
+          }).join("") +
+        '</div>' +
+        '<div class="dp-row">' +
+          '<span class="k">排序</span>' +
+          '<button class="dp-link' + (sort === "count" ? " on" : "") + '" data-sort="count" type="button">周边小区最多</button>' +
+          '<button class="dp-link' + (sort === "name" ? " on" : "") + '" data-sort="name" type="button">名称</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="result-count">共 ' + list.length + ' 条' +
+        (Object.keys(picked).filter(function (k) { return picked[k]; }).length
+          ? '（已按区域筛选）' : '') + '</div>' +
+
+      '<div class="poi-list">' + (list.length ? list.map(function (it) {
+        var d = normDistrict(it.district);
+        return '<div class="poi-row">' +
+          '<div class="poi-main">' +
+            '<div class="poi-name">' + esc(it.name) + '</div>' +
+            '<div class="poi-meta">' +
+              (d ? esc(d) : '<span class="bad">区未知</span>') +
+              (it.grade ? " · " + esc(it.grade) : "") +
+            '</div>' +
+          '</div>' +
+          '<div class="poi-count">' + it.n + ' 个周边小区</div>' +
+        '</div>';
+      }).join("") : '<div class="empty">该区域暂无收录</div>') + '</div>' +
+
+      '<div class="coverage">' +
+        '<span>区域覆盖率：' + cov.withD + ' / ' + cov.all + '（' + cov.pct + '%）</span>' +
+        (cov.pct < 100 ? '<span class="bad">其余条目 district 为空，需数据侧回填</span>' : '') +
+      '</div>' +
+
+      noteBlock();
+
+    app.querySelectorAll("[data-type]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        type = b.getAttribute("data-type");
+        picked = {};
+        render();
+      });
+    });
+    app.querySelectorAll("[data-district]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var d = b.getAttribute("data-district");
+        if (!d) picked = {};
+        else picked[d] = !picked[d];
+        render();
+      });
+    });
+    app.querySelectorAll("[data-sort]").forEach(function (b) {
+      b.addEventListener("click", function () { sort = b.getAttribute("data-sort"); render(); });
+    });
+  }
+
+  function noteBlock() {
+    return '<p class="proto-note">' +
+      '<b>为什么现在按区查不了</b>：' +
+      '<table>' +
+        '<tr><th>类别</th><th>总数</th><th>district 为空</th><th>覆盖率</th></tr>' +
+        '<tr><td>学校（北京）</td><td>1949</td><td>1887</td><td>3.2%</td></tr>' +
+        '<tr><td>医院（北京）</td><td>450</td><td>431</td><td>4.2%</td></tr>' +
+        '<tr><td>高铁站（北京）</td><td>25</td><td>0</td><td>100%</td></tr>' +
+      '</table>' +
+      '并且已有的区名格式不统一：<code>朝阳</code> / <code>朝阳区</code> / <code>Chaoyang 朝阳区</code> 混用，' +
+      '所以即使有值也筛不准。前端也没有区域筛选控件。' +
+      '<b>三件事一起做</b>：① 数据侧回填 district（可用最近小区的区，抽样 14/20 能补上）；' +
+      '② 统一区名（去「区」后缀、剥离英文前缀）；③ 前端加这一行区域筛选，与「找小区」的区筛选同一套区名。' +
+      '</p>';
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
