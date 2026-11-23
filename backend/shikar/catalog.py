@@ -14,7 +14,7 @@
 
 过滤与分页规则：
 
-* ``city`` / ``district`` 精确匹配；``q`` 名称包含匹配（大小写不敏感）；
+* ``city`` / ``district`` 精确匹配；``q`` 模糊匹配（见下方专段）；
 * ``price_min`` / ``price_max``：按**最新一期**（``week`` 最大）的 ``price``
   过滤；``None`` 表示不限；区间左闭右闭；最小大于最大抛错；
 * ``lines``（线路 id 列表，多线取 OR）/ ``station``（指定站点）/ ``subway_max``
@@ -23,6 +23,14 @@
   时抛出明确错误；
 * ``sort``：``default`` / ``price_asc`` / ``price_desc`` / ``subway_distance``；
   一切排序都以 ``city,district,name,id`` 作为稳定次级顺序。
+
+``q``（模糊查询）的口径：
+
+* 匹配面为**名称 / 别名 / 板块 / 区 / 城市**五个字段，任一命中即算该段命中；
+* 按空白拆成多段，**段间取 AND**（``q="朝阳 望京"`` 要求同时命中）；
+* 不区分大小写；``%`` / ``_`` / ``\\`` 按字面处理（``ESCAPE '\\'``），
+  不会扩大成全量；
+* 空串或全空白不参与过滤，等同不限。
 
 每个条目额外携带 ``features.subway``：命中条件下**距离最近的一条**线路信息
 （线路名、站名、距离、口径），未命中或无地铁数据时为 ``None``。
@@ -67,6 +75,42 @@ def _clamp_page_size(page_size: Optional[int]) -> int:
     return page_size
 
 
+#: ``q`` 模糊匹配覆盖的列（名称 / 别名 / 板块 / 区 / 城市）。
+_Q_COLUMNS = ("x.name", "x.alias", "x.plate", "x.district", "x.city")
+
+
+def _escape_like(term: str) -> str:
+    """把 ``LIKE`` 通配符转义成字面量（配合 ``ESCAPE '\\'``）。
+
+    先转义反斜杠自身再转义 ``%`` / ``_``，避免 ``\\%`` 被二次转义成「转义符 + 通配」。
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _q_clause(q: Optional[str]) -> tuple[str, list]:
+    """把关键词折成 ``LIKE`` 子句与参数：空格分词、段间 AND、五个字段取 OR。
+
+    ``None`` / 空串 / 全空白均不产生条件（等同不限）。每段在
+    :data:`_Q_COLUMNS` 任一列上包含即命中；``%`` / ``_`` 按字面匹配。
+    """
+    if q is None:
+        return "", []
+    terms = q.split()
+    if not terms:
+        return "", []
+    clauses: list[str] = []
+    params: list = []
+    for term in terms:
+        like = "%" + _escape_like(term.lower()) + "%"
+        ors = " OR ".join(
+            "lower(COALESCE({col}, '')) LIKE ? ESCAPE '\\'".format(col=col)
+            for col in _Q_COLUMNS
+        )
+        clauses.append("AND (" + ors + ")")
+        params.extend([like] * len(_Q_COLUMNS))
+    return " ".join(clauses), params
+
+
 def _build_where(
     city: Optional[str], district: Optional[str], q: Optional[str]
 ) -> tuple[str, list]:
@@ -79,9 +123,10 @@ def _build_where(
     if district is not None:
         clauses.append("AND x.district = ?")
         params.append(district)
-    if q is not None and q != "":
-        clauses.append("AND lower(x.name) LIKE lower(?)")
-        params.append("%" + q + "%")
+    q_sql, q_params = _q_clause(q)
+    if q_sql:
+        clauses.append(q_sql)
+        params.extend(q_params)
     return " ".join(clauses), params
 
 
@@ -124,7 +169,8 @@ def query_catalog(
     :param conn: 已打开的 SQLite 连接（只读使用）。
     :param city: 城市精确过滤；``None`` 不限。
     :param district: 区精确过滤；``None`` 不限。
-    :param q: 小区名包含匹配（不区分大小写）；``None`` 或空串不限。
+    :param q: 模糊关键词：名称/别名/板块/区/城市任一包含即命中，空格分词段间取 AND，
+        不区分大小写，``%``/``_`` 按字面处理；``None`` / 空串 / 全空白不限。
     :param page: 页码，从 1 开始；``None`` 或 < 1 视为 1。
     :param page_size: 每页条数，默认 50、上限 200；< 1 视为 1。
     :param price_min: 最新均价下限（元/㎡，含）；``None`` 不限。

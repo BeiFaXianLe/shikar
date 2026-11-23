@@ -166,6 +166,92 @@ def test_filter_by_q_case_insensitive(conn: sqlite3.Connection) -> None:
     assert res["items"][0]["id"] == "北京|9"
 
 
+def _add(conn: sqlite3.Connection, xid: str, city: str, district: str, plate: str,
+         name: str, alias: str | None = None) -> None:
+    """补一个小区（别名可为空），供模糊查询用例造数。"""
+    upsert_xiaoqu(
+        conn,
+        {"id": xid, "city": city, "district": district, "plate": plate,
+         "name": name, "alias": alias, "lng": None, "lat": None,
+         "build_year": None, "households": None},
+    )
+
+
+def test_filter_by_q_matches_alias(conn: sqlite3.Connection) -> None:
+    """``q`` 命中别名列（不区分大小写）：名称本身不含关键词也应命中。"""
+    _add(conn, "北京|10", "北京", "朝阳", "望京", "融科橄榄城", "望京SOHO")
+    res = query_catalog(conn, q="soho")
+    assert res["total"] == 1
+    assert res["items"][0]["id"] == "北京|10"
+
+
+def test_filter_by_q_matches_plate(conn: sqlite3.Connection) -> None:
+    """``q`` 命中板块（plate）列：名称与区都不含「望京」的也能被找到。"""
+    _add(conn, "北京|11", "北京", "朝阳", "望京", "宝星园")
+    res = query_catalog(conn, q="望京")
+    assert {it["id"] for it in res["items"]} == {"北京|1", "北京|2", "北京|11"}
+
+
+def test_filter_by_q_matches_district(conn: sqlite3.Connection) -> None:
+    """``q`` 命中区列：``q=海淀`` 返回海淀的小区（原口径只搜名称会漏）。"""
+    res = query_catalog(conn, q="海淀")
+    assert res["total"] == 1
+    assert res["items"][0]["id"] == "北京|3"
+
+
+def test_filter_by_q_matches_city(conn: sqlite3.Connection) -> None:
+    """``q`` 命中城市列：``q=天津`` 返回两个天津小区。"""
+    res = query_catalog(conn, q="天津")
+    assert res["total"] == 2
+    assert {it["city"] for it in res["items"]} == {"天津"}
+
+
+def test_filter_by_q_terms_are_and(conn: sqlite3.Connection) -> None:
+    """空格分词：每段都要命中（AND），结果集是单段结果的子集。"""
+    both = query_catalog(conn, q="北京 中关村")
+    assert both["total"] == 1
+    assert both["items"][0]["id"] == "北京|3"
+    city_only = query_catalog(conn, q="北京")
+    assert both["total"] < city_only["total"]
+    assert {it["id"] for it in both["items"]} <= {it["id"] for it in city_only["items"]}
+    # 两段互相矛盾时为空集，而不是退化成单段。
+    assert query_catalog(conn, q="天津 中关村")["total"] == 0
+
+
+def test_filter_by_q_literal_wildcards(conn: sqlite3.Connection) -> None:
+    """``%`` / ``_`` / ``\\`` 按字面处理：不返回全量，也不报错。"""
+    for q in ("%", "_", "\\\\", "望%", "望_"):
+        res = query_catalog(conn, q=q)
+        assert res["total"] == 0, q
+        assert res["items"] == [], q
+    # 真的含 % 的名字仍可被字面命中。
+    _add(conn, "北京|12", "北京", "朝阳", "望京", "100%社区")
+    hit = query_catalog(conn, q="100%")
+    assert hit["total"] == 1
+    assert hit["items"][0]["id"] == "北京|12"
+
+
+def test_filter_by_q_blank_means_unfiltered(conn: sqlite3.Connection) -> None:
+    """空串 / 全空白 / None 都不参与过滤，等同不限。"""
+    all_total = query_catalog(conn)["total"]
+    assert all_total == 5
+    for q in ("", "   ", "\t\n"):
+        assert query_catalog(conn, q=q)["total"] == all_total, repr(q)
+
+
+def test_filter_by_q_total_matches_paged_items(conn: sqlite3.Connection) -> None:
+    """带 ``q`` 时 total 与分页切片一致：逐页取完的条数等于 total，且内容不重不漏。"""
+    res = query_catalog(conn, q="北京", page_size=1)
+    total = res["total"]
+    seen: list[str] = []
+    for page in range(1, total + 2):
+        got = query_catalog(conn, q="北京", page=page, page_size=1)
+        assert got["total"] == total
+        seen.extend(it["id"] for it in got["items"])
+    assert len(seen) == total
+    assert len(set(seen)) == total
+
+
 def test_pagination_total_and_slice(conn: sqlite3.Connection) -> None:
     """page_size=2：total 仍为全量，第 1、2 页各 2 条、第 3 页 1 条。"""
     p1 = query_catalog(conn, page=1, page_size=2)
@@ -261,6 +347,24 @@ def test_http_catalog_empty(live_server: dict) -> None:
     assert status == 200
     assert payload["total"] == 0
     assert payload["items"] == []
+
+
+def test_http_catalog_q_fuzzy_and_wildcards(
+    live_server: dict, conn: sqlite3.Connection
+) -> None:
+    """HTTP 层：模糊查询（板块/区分词）生效，通配符按字面处理且不报 500。"""
+    status, payload = _get_json(live_server, "/api/catalog?q=%E6%9C%9D%E9%98%B3")
+    assert status == 200  # q=朝阳 命中区列
+    assert {it["id"] for it in payload["items"]} == {"北京|1", "北京|2"}
+
+    status, payload = _get_json(live_server, "/api/catalog?q=%E6%9C%9D%E9%98%B3%20%E6%9C%9B%E4%BA%AC")
+    assert status == 200  # q="朝阳 望京" 段间 AND
+    assert payload["total"] == 2
+
+    for q in ("%25", "_", "%25%25"):  # %、_、%%
+        status, payload = _get_json(live_server, "/api/catalog?q=" + q)
+        assert status == 200, q
+        assert payload["total"] == 0, q
 
 
 # --------------------------------------------------------------------------- #

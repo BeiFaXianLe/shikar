@@ -159,6 +159,31 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
 .hero-cta.primary { background: var(--gold); border-color: var(--gold); color: #101820; }
 .hero-cta.primary:hover { background: var(--gold-hi); border-color: var(--gold-hi); color: #101820; }
 
+/* 首页 hero 搜索框（F-01）：胶囊、哑金按钮，颜色全部取自既有变量 */
+.hero-search { display: flex; gap: 10px; margin-top: 26px; max-width: 560px; }
+.hero-search input {
+  flex: 1 1 auto; min-width: 0;
+  background: rgba(245, 239, 227, 0.04);
+  border: 1px solid var(--line-strong); border-radius: var(--r-pill);
+  color: var(--ivory); font-family: var(--sans); font-size: 15px;
+  padding: 12px 20px; -webkit-appearance: none; appearance: none;
+}
+.hero-search input::placeholder { color: var(--ink-faint); opacity: 1; }
+.hero-search input:focus { outline: 2px solid var(--gold); outline-offset: 2px; border-color: var(--gold); }
+.hero-search button {
+  flex: 0 0 auto;
+  font-family: var(--sans); font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+  color: #101820; background: var(--gold); border: 1px solid var(--gold);
+  border-radius: var(--r-pill); padding: 12px 22px; cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.hero-search button:hover { background: var(--gold-hi); border-color: var(--gold-hi); }
+@media (max-width: 720px) {
+  .hero-search { margin-top: 20px; max-width: none; }
+  .hero-search input { font-size: 16px; min-height: 46px; padding: 10px 18px; }
+  .hero-search button { min-height: 46px; padding: 10px 18px; }
+}
+
 /* 金色细环 + 横线：参考图右侧的装饰母题 */
 .hero-deco { position: relative; width: 230px; height: 210px; flex-shrink: 0; }
 .hero-ring {
