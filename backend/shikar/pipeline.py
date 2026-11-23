@@ -20,6 +20,9 @@
 历史」为样本**（每个小区各指标取截至当周最近 ``window`` 条已有数值），城市内跨
 小区方案待数据充足再切换。这一点同样体现在 :func:`_normalize_series` 与
 :func:`recompute` 的 docstring 中。
+
+**缺失分项不记中性 50 分**（docs/45 报告 P0-1）：样本不足或原始值缺失的分项在
+归一化后返回 ``None``，不参与温度加权；温度只对可用分项按权重重归一化。
 """
 
 from __future__ import annotations
@@ -43,11 +46,18 @@ MIN_PERIODS = 3
 MIN_SPAN_DAYS = 365
 MAX_GAP_DAYS = 365
 
+# mom4（4 周价格动量）的日历对齐窗口：目标「4 周前」= 28 天，允许 ±7 天匹配期次。
+# 窗口内取不到历史期次时 ``mom4 = None``——旧实现取「前第 4 条记录」，在月粒度 / 跨
+# 2019 的稀疏序列里会变成「相隔 100 天到 7 年」，口径错误（docs/45 报告 P0-2）。
+MOM4_TARGET_DAYS = 28
+MOM4_TOLERANCE_DAYS = 7
+
 
 def _parse_week(week: object) -> Optional[date]:
     """把 ``YYYY-Www`` / ``YYYY-MM`` 解析为日期（用于跨度与缺口判定）。
 
-    与 ``scripts/build_db.py`` 的 ``parse_week`` 保持一致；不可解析返回 ``None``。
+    与 ``scripts/build_db.py`` / ``scripts/ingest_history.py`` 写入的周次格式保持一致；
+    不可解析返回 ``None``。
     """
     if not week:
         return None
@@ -201,27 +211,81 @@ def ingest(
     return {"xiaoqu": len(affected), "metrics": metric_rows}
 
 
-def _percentile_series(values: Sequence[Optional[float]], window: int, min_history: int) -> list[float]:
+def _mom4_series(series: Sequence[Mapping[str, object]]) -> list[Optional[float]]:
+    """按**日历差**计算 4 周价格动量 ``mom4 = price_t / price_{4周前} - 1``。
+
+    对每条记录，在它之前的期次里找偏移落在 ``28±7`` 天（即 21–35 天）内的最近
+    一期作为基准；多条候选取最接近 28 天的那条（并列时取更早/更老的那期，
+    21 天与 35 天同为偏 7 天，结果确定、可复现）。找不到（稀疏序列、跨年缺口，
+    或当期/基准价为 0 或缺失）时该条 ``mom4`` 为 ``None``，不再退化成「前第 4 条记录」。
+
+    入参顺序必须是**时间升序**（``recompute`` 已按解析日期重排）。
+
+    :param series: 按日期升序的指标行序列（需含 ``week`` / ``price``）。
+    :return: 与 ``series`` 等长的 ``mom4`` 列表（可含 ``None``）。
+    """
+    dates = [_parse_week(row.get("week")) for row in series]
+    prices = [_safe_float(row.get("price")) for row in series]
+    lo = MOM4_TARGET_DAYS - MOM4_TOLERANCE_DAYS
+    hi = MOM4_TARGET_DAYS + MOM4_TOLERANCE_DAYS
+
+    out: list[Optional[float]] = []
+    for i, d_i in enumerate(dates):
+        price_i = prices[i]
+        # 当期价为 0 也是缺失值：否则会算出 mom4 = -100%，把自己钉成「降温最快」。
+        if d_i is None or price_i in (None, 0.0):
+            out.append(None)
+            continue
+
+        best_j = -1
+        best_diff: Optional[int] = None
+        for j in range(i):
+            d_j = dates[j]
+            price_j = prices[j]
+            if d_j is None or price_j in (None, 0.0):
+                continue
+            gap = (d_i - d_j).days
+            if lo <= gap <= hi:
+                diff = abs(gap - MOM4_TARGET_DAYS)
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_j = j
+
+        if best_j < 0:
+            out.append(None)
+        else:
+            out.append(price_i / prices[best_j] - 1.0)  # type: ignore[operator]
+    return out
+
+
+def _percentile_series(
+    values: Sequence[Optional[float]], window: int, min_history: int
+) -> list[Optional[float]]:
     """对单个小区单个分项做「自身历史」百分位归一化。
 
     对第 ``i`` 个值，取其**截至当周（含）最近 ``window`` 条**的已有（非缺失）
     数值作为样本，调用 :func:`scoring.percentile_normalize`。当 ``values[i]``
-    缺失或样本数 ``< min_history`` 时返回中性值 ``50.0``。
+    缺失或样本数 ``< min_history`` 时返回 ``None``（**不是**中性 50）——“无法
+    估计分位”与“真实处于中位数”是两件事，前者不能参与温度加权（docs/45 P0-1）。
 
     :param values: 按周升序的分项原始值序列（可含 ``None``）。
     :param window: 采样窗口（最近多少条）。
-    :param min_history: 最少样本数，不足则回退 ``50.0``。
-    :return: 与 ``values`` 等长的 0–100 归一化值列表。
+    :param min_history: 最少样本数，不足则不计入可用分项；低于
+        :data:`scoring.MIN_HISTORY_SAMPLES` 时自动抬到该值。
+    :return: 与 ``values`` 等长的 0–100 归一化值列表（不可用处为 ``None``）。
     """
-    out: list[float] = []
+    # percentile_normalize 在样本 < MIN_HISTORY_SAMPLES 时返回中性 50；若调用方传入更小
+    # 的 min_history，这种「无法估计」的 50 会被当成可用分项，又回到假 50 的老问题。
+    min_history = max(min_history, scoring.MIN_HISTORY_SAMPLES)
+    out: list[Optional[float]] = []
     for i, value in enumerate(values):
         if value is None:
-            out.append(50.0)
+            out.append(None)
             continue
         start = max(0, i - window + 1)
         samples = [v for v in values[start : i + 1] if v is not None]
         if len(samples) < min_history:
-            out.append(50.0)
+            out.append(None)
             continue
         out.append(scoring.percentile_normalize(value, samples))
     return out
@@ -241,19 +305,20 @@ def recompute(
 
     对每个小区，按 ``week`` 升序取其全部历史行，逐行计算：
 
-    * ``mom4`` = ``price_t / price_{t-4周} - 1``（取该小区前第 4 条记录的
-      ``price``；不足 4 条则为 ``None``）；
+    * ``mom4`` = ``price_t / price_{4周前} - 1``：按**日历差**找偏移在 28±7 天内
+      的最近一期作为基准，找不到则为 ``None``（不再取「前第 4 条记录」）；
     * ``absorb`` = ``vol30 / supply``（``supply`` 为空或 0 则为 ``None``）；
     * 对 ``mom4 / absorb / bargain / heat`` 四个分项各自归一化：以该小区
       **截至当周（含）最近 ``window`` 条**的已有数值为样本，调用
       :func:`scoring.percentile_normalize`；``value`` 缺失或样本数
-      ``< min_history`` 时取 ``50.0``；
+      ``< min_history`` 时归一化为 ``None``（**不是**中性 50，不参与加权）；
     * **数据充分性（docs/04 §2.2）**：期数 ≥ ``min_periods``、首末跨度
       ≥ ``min_span_days``、最大缺口 ≤ ``max_gap_days``，三者全满足才继续；
       否则该小区所有期次 ``temperature=None``、``stage=None``（``mom4`` /
       ``absorb`` 仍照常写回——它们是读数，不是结论）；
-    * ``temperature = scoring.compute_temperature({mom4, absorb, bargain, heat})``
-      （分项均为上一步的归一化值）；
+    * ``temperature = scoring.compute_temperature({可用分项})``：只传有值的分项，
+      权重在可用分项上重新归一化；一个可用分项都没有时温度也置 ``None``，不编造
+      50 分；
     * ``stage = scoring.classify_stage(temperature, mom4 if mom4 is not None
       else 0.0)``；
     * ``UPDATE xiaoqu_metric_weekly SET mom4=?, absorb=?, temperature=?, stage=?
@@ -285,6 +350,10 @@ def recompute(
         if n == 0:
             continue
 
+        # week 的字符串序 ≠ 日期序（"2026-12" < "2026-W46"，但日期在后）：
+        # 月粒度与周粒度混排时按解析日期重排，保证 mom4 与窗口归一化都在时间轴上进行。
+        series.sort(key=lambda r: _parse_week(r.get("week")) or date.min)
+
         # 数据充分性（docs/04 §2.2）：不足则温度/阶段置空，只保留读数（mom4/absorb）。
         sufficient = is_sufficient(
             [r.get("week") for r in series],
@@ -293,19 +362,13 @@ def recompute(
             max_gap_days=max_gap_days,
         )
 
-        prices = [_safe_float(r.get("price")) for r in series]
         supplies = [_safe_float(r.get("supply")) for r in series]
         vols = [_safe_float(r.get("vol30")) for r in series]
         bargains = [_safe_float(r.get("bargain")) for r in series]
         heats = [_safe_float(r.get("heat")) for r in series]
 
-        # mom4：price_t / price_{t-4} - 1（前第 4 条记录，即索引 i-4）。
-        mom4s: list[Optional[float]] = []
-        for i in range(n):
-            if i >= 4 and prices[i] is not None and prices[i - 4] not in (None, 0.0):
-                mom4s.append(prices[i] / prices[i - 4] - 1.0)  # type: ignore[operator]
-            else:
-                mom4s.append(None)
+        # mom4：price_t / price_{4周前} - 1（按日历差对齐，见 _mom4_series）。
+        mom4s = _mom4_series(series)
 
         # absorb：vol30 / supply（supply 空或 0 时为 None）。
         absorbs: list[Optional[float]] = []
@@ -325,20 +388,21 @@ def recompute(
 
         for i, row in enumerate(series):
             mom4_val = mom4s[i]
-            if sufficient:
-                temperature = scoring.compute_temperature(
-                    {
-                        "mom4": n_mom4[i],
-                        "absorb": n_absorb[i],
-                        "bargain": n_bargain[i],
-                        "heat": n_heat[i],
-                    },
-                    weights,
-                )
+            # 只把有值的分项交给温度公式，缺失分项不记 50（docs/45 P0-1）。
+            available = {
+                "mom4": n_mom4[i],
+                "absorb": n_absorb[i],
+                "bargain": n_bargain[i],
+                "heat": n_heat[i],
+            }
+            available = {k: v for k, v in available.items() if v is not None}
+            if sufficient and available:
+                temperature = scoring.compute_temperature(available, weights)
                 stage = scoring.classify_stage(
                     temperature, mom4_val if mom4_val is not None else 0.0
                 )
             else:
+                # 数据不足或没有任何可用分项：不给温度，也不编造中性 50。
                 temperature = None
                 stage = None
 

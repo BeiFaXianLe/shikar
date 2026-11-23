@@ -103,10 +103,35 @@ class TestComputeTemperature:
     def test_empty_metrics_neutral(self):
         assert compute_temperature({}) == 50.0
 
-    def test_missing_component_defaults_neutral(self):
-        # 仅给 mom4，其余按 50 -> 0.40*100 + 0.25*50 + 0.20*50 + 0.15*50
-        # = 40 + 12.5 + 10 + 7.5 = 70
-        assert compute_temperature({"mom4": 100.0}) == pytest.approx(70.0)
+    def test_missing_component_is_not_50(self):
+        # 只给 mom4 时，权重在可用分项上重归一化：温度就是 n(mom4) 本身，
+        # 不再被缺席的三项拉到中性 50（docs/45 报告 P0-1）。
+        assert compute_temperature({"mom4": 100.0}) == pytest.approx(100.0)
+        assert compute_temperature({"mom4": 0.0}) == pytest.approx(0.0)
+        assert compute_temperature({"mom4": 37.0}) == pytest.approx(37.0)
+
+    def test_none_component_is_treated_as_missing(self):
+        # 显式 None 与省略等价，都从分子分母中剔除。
+        with_none = compute_temperature(
+            {"mom4": 90.0, "absorb": None, "bargain": None, "heat": None}
+        )
+        omitted = compute_temperature({"mom4": 90.0})
+        assert with_none == omitted == pytest.approx(90.0)
+
+    def test_two_available_components_renormalize(self):
+        # 只有 mom4 / absorb 可用：权重和为 0.65，均满分时温度仍为 100。
+        assert compute_temperature(
+            {"mom4": 100.0, "absorb": 100.0}
+        ) == pytest.approx(100.0)
+        # 自定义等权：mom4=100（可用）、absorb=0（可用）、heat 缺失。
+        custom = {"mom4": 1.0, "absorb": 1.0, "bargain": 0.0, "heat": 30.0}
+        assert compute_temperature(
+            {"mom4": 100.0, "absorb": 0.0}, weights=custom
+        ) == pytest.approx(50.0)
+
+    def test_only_bargain_available_inverts(self):
+        # 只剩 bargain 可用时也要做反向（100 - n），不能直接返回 n。
+        assert compute_temperature({"bargain": 80.0}) == pytest.approx(20.0)
 
 
 # --------------------------------------------------------------------------- #

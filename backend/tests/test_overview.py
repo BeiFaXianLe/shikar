@@ -26,11 +26,11 @@ from shikar.overview import compute_overview, list_districts
 from shikar.pipeline import ingest
 from shikar.sources.base import MetricRecord
 
-WEEKS = 6  # 每小区 6 期数据：mom4 在第 5、6 期（索引 4、5）非空。
+WEEKS = 14  # 每小区 14 期×30 天：跨度 390 天过门槛，mom4 从第 2 期起可算、第 5 期起有分位。
 
 
-def _week_at(i: int, start: date = date(2024, 1, 1), step_days: int = 91) -> str:
-    """第 ``i`` 期（默认 2024-01-01 起每 91 天一期），跨年以满足 12 个月门槛。"""
+def _week_at(i: int, start: date = date(2024, 1, 1), step_days: int = 30) -> str:
+    """第 ``i`` 期（默认 2024-01-01 起每 30 天一期，落在 mom4 的 28±7 天窗口内）。"""
     d = start + timedelta(days=step_days * i)
     y, w, _ = d.isocalendar()
     return f"{y}-W{w:02d}"
@@ -301,8 +301,11 @@ def test_overview_readings_include_insufficient(empty_conn: sqlite3.Connection) 
     assert city["insufficient"] == 1
     assert city["readings"]["with_price"] == 2
     assert city["readings"]["total"] == 2
-    # 最新价：55000 与 70000 的中位数
-    assert city["readings"]["median_price"] == 62500.0
+    # 最新价：合格小区 50000+1000×(WEEKS-1) 与不足小区 70000 的中位数。
+    # rebase 到首页读数层后 WEEKS 由 6 增至 14（新 mom4 需 28±7 天的日历跨度），
+    # 故这里按 WEEKS 推算，不再写死 55000。
+    latest_qualified = 50000.0 + 1000.0 * (WEEKS - 1)
+    assert city["readings"]["median_price"] == (latest_qualified + 70000.0) / 2
 
 
 def test_overview_readings_mom4_fraction_and_median(empty_conn: sqlite3.Connection) -> None:

@@ -13,7 +13,7 @@ import importlib.util
 import os
 import sqlite3
 
-from shikar import overview
+from shikar import overview, pipeline
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -101,23 +101,33 @@ def test_dedupe_2026_keeps_multiple_weeks():
 
 
 def test_build_db_end_to_end_multi_week_csv(tmp_path, monkeypatch):
-    """端到端：多周 CSV 全部入库，当期周（W47）有温度、榜单非空。
+    """端到端：多周 CSV 全部入库；派生指标交给 recompute 统一计算。
 
     这是 testWorker 复验发现的缺口：旧去重键 (city, xiaoqu_id) 把 12 行截成 3 行
     （只剩首周），当期周没有温度、overview 必空。
+    另：build_db 只写**原始数据**，``mom4`` / ``temperature`` 一律交给
+    ``scripts/recompute_metrics.py``（``shikar.pipeline.recompute``），
+    避免「build_db 写一版、recompute 再覆盖一版」两套口径打架。
     """
     data = tmp_path / "data"
     data.mkdir()
     header = "city,district,plate,xiaoqu_id,xiaoqu_name,week,price,supply,built_year,mom1_pct,source"
     (data / "history2019.csv").write_text(header + "\n", encoding="utf-8-sig")
 
-    # 跨度 ≥365 天、相邻缺口均 ≤365 天，且当期周为 2026-W47（满足 #36 门槛）
-    weeks = ["2025-W05", "2025-W22", "2026-W05", "2026-W47"]
+    # 15 期、每期相隔 28 天：跨度 392 天过门槛，相邻缺口 28 天在 mom4 的 28±7 窗口内。
+    weeks = []
+    d = datetime.date(2025, 9, 1)
+    for _ in range(15):
+        y, w, _ = d.isocalendar()
+        weeks.append(f"{y}-W{w:02d}")
+        d += datetime.timedelta(days=28)
+
     lines = [header]
     for i, name in enumerate(["A小区", "B小区", "C小区"]):
         for j, w in enumerate(weeks):
+            price = 50000 + i * 1000 + (j % 3) * 500
             lines.append(
-                f"北京,朝阳,望京,X{i},{name},{w},{50000 + i * 1000 + j * 500},10,2005,1.0,fang.com"
+                f"北京,朝阳,望京,X{i},{name},{w},{price},10,2005,1.0,fang.com"
             )
     (data / "fang_2026.csv").write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
@@ -128,12 +138,22 @@ def test_build_db_end_to_end_multi_week_csv(tmp_path, monkeypatch):
     conn.row_factory = sqlite3.Row
     try:
         n = conn.execute("SELECT COUNT(*) FROM xiaoqu_metric_weekly").fetchone()[0]
-        assert n == 12, f"多周行被丢弃，只剩 {n} 行"
+        assert n == 45, f"多周行被丢弃，只剩 {n} 行"
+        # build_db 只写原始数据：派生列必须留空（口径只有一份实现）。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE mom4 IS NOT NULL"
+        ).fetchone()[0] == 0
+
+        # 生产顺序：build_db → recompute_metrics（refresh.sh 同流程）。
+        pipeline.recompute(conn)
         rows = conn.execute(
-            "SELECT temperature FROM xiaoqu_metric_weekly WHERE week = '2026-W47'"
+            "SELECT temperature FROM xiaoqu_metric_weekly WHERE week = ?", (weeks[-1],)
         ).fetchall()
         assert len(rows) == 3
-        assert all(r["temperature"] is not None for r in rows), "当期周温度为空"
+        assert all(r["temperature"] is not None for r in rows), "recompute 后当期周温度仍为空"
     finally:
         conn.close()
 
@@ -143,7 +163,7 @@ def test_build_db_end_to_end_multi_week_csv(tmp_path, monkeypatch):
         ov = overview.compute_overview(ov_conn)
     finally:
         ov_conn.close()
-    assert ov["week"] == "2026-W47"
+    assert ov["week"] == weeks[-1]
     assert ov["cities"] and ov["cities"][0]["count"] == 3
     assert ov["cities"][0]["temperature"] is not None
 
@@ -175,181 +195,130 @@ def test_iso_week_matches_existing_library_format():
     assert fetch_fang._iso_week(datetime.date(2027, 1, 1)) == "2026-W53"
 
 
-# —— 调用点集成：温度只能落在推导出的当期周上 ——
+# —— 调用点集成：build_db 只写原始数据，派生指标交给 recompute ——
 #
-# 上面几例只测 _current_week 本身。若 main() 里把入参写错（例如传 rows2019
-# 而非 cur），那些用例仍会全绿，但温度会被算到错误期次上。本用例跑真实的
-# main()，从产物库反查哪一期拿到了 temperature。
+# 旧实现让 build_db 自己算一遍温度（只用当期周 + 平台近月环比），recompute 又用
+# 另一套口径覆盖；两套口径必然漂移（docs/45 P0-2）。现在 build_db 只写原始行，
+# 派生列一律由 shikar.pipeline.recompute 计算，下面的用例锁住这个契约。
 
-def _rows2026(city="北京", xid="1", name="测试小区", week="2026-W46"):
-    return [{
-        "city": city, "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
-        "xiaoqu_name": name, "week": week, "price": "60000", "supply": "100",
-        "built_year": "2010", "mom1_pct": "-1.5", "source": "fang.com",
-    }]
-
-
-def _rows2019(city="北京", xid="9", name="测试小区", weeks=("2025-06", "2025-12", "2026-06")):
-    """同一小区多期历史。
-
-    期次需同时满足 sufficient() 的三条：≥3 期、跨度≥365 天、相邻缺口≤365 天。
-    2025-06 → 2026-11(W46) 跨度 533 天，各相邻缺口均 <365。
-    """
-    return [{
-        "city": city, "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
-        "xiaoqu_name": name, "week": w, "price": "50000", "source": "lianjia",
-        "lng": "116.48", "lat": "39.99",
-    } for w in weeks]
+def _weekly_rows(xid="1", name="测试小区", city="北京", n=15,
+                 start=datetime.date(2025, 9, 1)):
+    """构造 ``n`` 期、每期相隔 28 天的 2026 CSV 行（跨度够、缺口落在 4 周窗口内）。"""
+    rows = []
+    d = start
+    for i in range(n):
+        y, w, _ = d.isocalendar()
+        rows.append({
+            "city": city, "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
+            "xiaoqu_name": name, "week": f"{y}-W{w:02d}",
+            "price": str(60000 + i * 300 + (i % 3) * 500),
+            "supply": "100", "built_year": "2010", "mom1_pct": "-1.5",
+            "source": "fang.com",
+        })
+        d += datetime.timedelta(days=28)
+    return rows
 
 
-def _run_main(monkeypatch, tmp_path, rows2026, rows2019):
-    """在临时目录跑一次 main()，返回 {week: temperature} 映射。"""
+def _run_main(monkeypatch, tmp_path, rows2026, rows2019=()):
+    """在临时目录跑一次 build_db.main()，返回连接（调用方负责 close）。"""
     import sqlite3
 
     monkeypatch.setattr(build_db, "DATA", str(tmp_path))
     monkeypatch.setattr(
         build_db, "read_csv",
-        lambda name: rows2026 if name == "fang_2026.csv" else rows2019,
+        lambda name: list(rows2026) if name == "fang_2026.csv" else list(rows2019),
     )
     build_db.main()
-
     conn = sqlite3.connect(str(tmp_path / "shikar.db"))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def test_build_db_writes_raw_only_then_recompute_fills_temperature(monkeypatch, tmp_path):
+    rows = _weekly_rows()
+    conn = _run_main(monkeypatch, tmp_path, rows)
     try:
-        return dict(conn.execute(
-            "SELECT week, temperature FROM xiaoqu_metric_weekly"
-        ).fetchall())
+        weeks = [r["week"] for r in conn.execute(
+            "SELECT week FROM xiaoqu_metric_weekly ORDER BY week")]
+        assert weeks == sorted(r["week"] for r in rows), "多周行被丢弃/改期"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
+        ).fetchone()[0] == 0, "build_db 不得自行计算温度"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE mom4 IS NOT NULL"
+        ).fetchone()[0] == 0, "build_db 不得把 mom1_pct 当 mom4 写入"
+
+        pipeline.recompute(conn)
+        filled = conn.execute(
+            "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
+        ).fetchone()[0]
+        # 不是「只有当期周有温度」，而是逐期可算的都算。
+        assert filled > 1
+        latest = conn.execute(
+            "SELECT temperature FROM xiaoqu_metric_weekly WHERE week = ?",
+            (max(r["week"] for r in rows),),
+        ).fetchone()[0]
+        assert latest is not None
     finally:
         conn.close()
 
 
-def test_temperature_lands_only_on_derived_current_week(monkeypatch, tmp_path):
-    temps = _run_main(
-        monkeypatch, tmp_path,
-        _rows2026(week="2026-W46"), _rows2019(),
-    )
-    # 当期周由 2026 CSV 推导为 2026-W46，只有这一期允许有温度。
-    assert temps["2026-W46"] is not None
-    assert temps["2025-06"] is None
-    assert temps["2025-12"] is None
-    assert temps["2026-06"] is None
+def test_week_whitespace_normalized_before_storage(monkeypatch, tmp_path):
+    """week 带首尾空白时入库必须是去空白后的同一期，否则会出现重复期次。"""
+    rows = _weekly_rows(n=3)
+    rows[0]["week"] = " " + rows[0]["week"] + " "
+    conn = _run_main(monkeypatch, tmp_path, rows)
+    try:
+        weeks = sorted(r["week"] for r in conn.execute(
+            "SELECT week FROM xiaoqu_metric_weekly"))
+        assert weeks == sorted(r["week"].strip() for r in rows)
+        assert all(w == w.strip() for w in weeks)
+    finally:
+        conn.close()
 
 
-def test_temperature_follows_csv_week_instead_of_hardcoded_one(monkeypatch, tmp_path):
-    """CSV 换成 W47 后，温度必须落在 W47——这条会在硬编码复发时失败。"""
-    temps = _run_main(
-        monkeypatch, tmp_path,
-        _rows2026(week="2026-W47"), _rows2019(),
-    )
-    assert temps["2026-W47"] is not None
-    assert temps["2025-06"] is None
-    assert temps["2026-06"] is None
-
-
-def test_whitespace_in_week_does_not_block_temperature(monkeypatch, tmp_path):
-    """week 带首尾空白时，推导值与入库值必须一致，否则温度静默丢失。"""
-    temps = _run_main(
-        monkeypatch, tmp_path,
-        _rows2026(week=" 2026-W46 "), _rows2019(),
-    )
-    assert temps["2026-W46"] is not None
-
-
-def test_build_db_uses_pipeline_gate():
-    """门槛只有一份实现：build_db 必须引用 pipeline.is_sufficient，不得自带副本。"""
-    from shikar import pipeline
-
-    assert build_db.pipeline is pipeline
-    assert build_db.pipeline.is_sufficient is pipeline.is_sufficient
+def test_build_db_does_not_reimplement_derived_metrics():
+    """派生指标只有一份实现：build_db 不得自带门槛 / 温度 / 周次解析副本。"""
     with open(build_db.__file__, "r", encoding="utf-8") as fh:
         src = fh.read()
-    assert "def parse_week(" not in src, "build_db 又复制了一份周次解析"
-    assert "def sufficient(" not in src, "build_db 又复制了一份充分性门槛"
-    assert "pipeline.is_sufficient(" in src
+    for forbidden in ("def parse_week(", "def sufficient(",
+                      "compute_temperature(", "is_sufficient("):
+        assert forbidden not in src, f"build_db 又复制了一份派生逻辑：{forbidden}"
 
 
-def test_build_db_and_recompute_agree_on_same_data(monkeypatch, tmp_path):
-    """交叉对照：同一份数据，build_db 与 pipeline.recompute 的合格判定必须一致。
-
-    只要有人把门槛拆成两份、或改了一处，这里就会红：先由 build_db 建库，
-    再用 recompute 在同一库上重算，判定（是否有温度）必须完全相同。
-    """
-    import sqlite3
-
-    from shikar import pipeline
-
-    def row(xid, name, week):
-        return {
-            "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": xid,
-            "xiaoqu_name": name, "week": week, "price": "60000", "supply": "100",
-            "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
-        }
-
-    rows2026 = [row("S1", "合格小区", w)
-                for w in ("2025-W05", "2025-W22", "2026-W05", "2026-W47")]
-    rows2026 += [row("S2", "不足小区", w) for w in ("2026-W05", "2026-W47")]
-
-    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
-    monkeypatch.setattr(
-        build_db, "read_csv",
-        lambda name: rows2026 if name == "fang_2026.csv" else [],
-    )
-    build_db.main()
-
-    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
-    conn.row_factory = sqlite3.Row
+def test_build_db_then_recompute_matches_qualification(monkeypatch, tmp_path):
+    """同一份数据：合格小区 recompute 后有温度，不足小区没有。"""
+    rows2026 = _weekly_rows(xid="S1", name="合格小区")
+    rows2026 += _weekly_rows(xid="S2", name="不足小区", n=3)
+    conn = _run_main(monkeypatch, tmp_path, rows2026)
     try:
-        def verdicts():
-            per: dict[str, list] = {}
+        def per_xiaoqu():
+            per = {}
             for r in conn.execute(
                 "SELECT xiaoqu_id, temperature FROM xiaoqu_metric_weekly"
             ):
                 per.setdefault(r["xiaoqu_id"], []).append(r["temperature"])
             return {k: any(t is not None for t in v) for k, v in per.items()}
 
-        before = verdicts()
-        assert before == {"北京|S1": True, "北京|S2": False}, before
-
+        assert per_xiaoqu() == {"北京|S1": False, "北京|S2": False}
         pipeline.recompute(conn)
-        after = verdicts()
-        assert after == before, f"recompute 与 build_db 判定不一致：build_db={before} recompute={after}"
+        assert per_xiaoqu() == {"北京|S1": True, "北京|S2": False}
     finally:
         conn.close()
 
 
-def test_cross_check_detects_divergent_thresholds(monkeypatch, tmp_path):
-    """交叉对照的灵敏度：同一库上把 recompute 的门槛调严，判定必须翻转。
-
-    这不是产品行为，而是证明「两条路径一旦参数分叉，交叉对照能抓到」。
-    数据为 3 期、跨度 378 天：默认门槛（≥3 期）合格；recompute 传 min_periods=4
-    后应变为不合格，于是「build_db 有温度 / recompute 无温度」的分叉会被暴露。
-    """
-    import sqlite3
-
-    from shikar import pipeline
-
-    rows = [{
-        "city": "北京", "district": "朝阳", "plate": "望京", "xiaoqu_id": "T1",
-        "xiaoqu_name": "三期小区", "week": w, "price": "60000", "supply": "100",
-        "built_year": "2010", "mom1_pct": "1.0", "source": "fang.com",
-    } for w in ("2025-W05", "2025-W30", "2026-W07")]
-
-    monkeypatch.setattr(build_db, "DATA", str(tmp_path))
-    monkeypatch.setattr(
-        build_db, "read_csv",
-        lambda name: rows if name == "fang_2026.csv" else [],
-    )
-    build_db.main()
-
-    conn = sqlite3.connect(str(tmp_path / "shikar.db"))
-    conn.row_factory = sqlite3.Row
+def test_recompute_threshold_is_the_single_gate(monkeypatch, tmp_path):
+    """灵敏度：把 recompute 的门槛调严，温度必须消失（证明门槛确实生效）。"""
+    conn = _run_main(monkeypatch, tmp_path, _weekly_rows())
     try:
-        def has_temp() -> bool:
+        def has_temp():
             return conn.execute(
                 "SELECT COUNT(*) FROM xiaoqu_metric_weekly WHERE temperature IS NOT NULL"
             ).fetchone()[0] > 0
 
-        assert has_temp() is True, "默认门槛下 3 期/378 天应合格"
-        pipeline.recompute(conn, min_periods=4)
-        assert has_temp() is False, "更严门槛下应判不合格；交叉对照未能发现分叉"
+        pipeline.recompute(conn)
+        assert has_temp() is True
+        pipeline.recompute(conn, min_periods=16)
+        assert has_temp() is False
     finally:
         conn.close()

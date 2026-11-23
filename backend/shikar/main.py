@@ -6,8 +6,8 @@
 包含两部分：
 
 * :func:`seed_demo` —— **确定性**生成 Demo 数据（北京 / 天津共 6 个小区、每小区
-  10 周），经由 :func:`shikar.pipeline.ingest` 写入库中，使 ``/api/overview`` 有
-  内容。价格走势有升有降，温度 / 阶段呈现差异。
+  ``_DEMO_WEEKS`` 期），经由 :func:`shikar.pipeline.ingest` 写入库中，使 ``/api/overview`` 有
+  内容。价格走势有升有降且带确定性波动，温度 / 阶段呈现差异。
 * :func:`run` —— 解析命令行参数，打开 ``sqlite3`` 连接并 ``init_db``，按需播种，
   再以 :func:`shikar.api.create_server` 起服务并 ``serve_forever()``。
 
@@ -43,12 +43,15 @@ def repo_root() -> str:
     return _REPO_ROOT
 
 #: Demo 每小区周数。
-_DEMO_WEEKS = 10
+# 15 期×28 天 = 392 天：既满足 docs/04 §2.2 的「跨度 ≥365 天」门槛（首末跨 14 个
+# 间隔），又让每期相隔 28 天、落在 mom4 的 28±7 天窗口内（旧版 13 周一期，
+# 改日历口径后 mom4 会全空、demo 四榜全空）。
+_DEMO_WEEKS = 15
 
 
 def _demo_week(i: int) -> str:
-    """Demo 第 ``i`` 期的 ISO 周（约 13 周一步，跨年以满足 ≥12 个月门槛）。"""
-    d = date(2025, 1, 6) + timedelta(days=13 * 7 * i)
+    """Demo 第 ``i`` 期的 ISO 周（每期相隔 28 天，即「4 周前」动量窗口）。"""
+    d = date(2025, 1, 6) + timedelta(days=28 * i)
     y, w, _ = d.isocalendar()
     return f"{y}-W{w:02d}"
 
@@ -68,10 +71,13 @@ def seed_demo(conn: sqlite3.Connection) -> dict:
     """确定性地生成 Demo 数据并写入库。
 
     对 :data:`_DEMO_SPECS` 中每个小区，按周生成 ``_DEMO_WEEKS`` 条记录：价格为
-    ``base_price + weekly_step * i``（线性，有升有降），``supply`` / ``vol30`` /
+    ``base_price`` 累加带确定性波动的周期增量（有升有降），``supply`` / ``vol30`` /
     ``bargain`` / ``heat`` 由小区序号与周序号经简单公式派生，全部为确定性数值
     （不依赖随机数），随后通过 :func:`shikar.pipeline.ingest` 统一入库并重算派生
     指标。
+
+    增量必须带波动：纯线性价格会让每个小区的 ``mom4`` 恒定，百分位恒为 50，
+    四榜又退化成「最热=最冷」（demo 是首次启动的门面，不能重现这个 bug）。
 
     由于 :func:`pipeline.ingest` 写入走 ``upsert``、重算只做 ``UPDATE``，重复调用
     本函数不会产生重复行（幂等）。
@@ -81,6 +87,7 @@ def seed_demo(conn: sqlite3.Connection) -> dict:
     """
     records: list[MetricRecord] = []
     for idx, (city, district, plate, name, base_price, step) in enumerate(_DEMO_SPECS):
+        price = base_price
         for i in range(_DEMO_WEEKS):
             # 由小区序号 idx 与周序号 i 派生的确定性指标，保证可复现。
             supply = 80 + idx * 15 + i * 2
@@ -95,13 +102,16 @@ def seed_demo(conn: sqlite3.Connection) -> dict:
                     xiaoqu_id="",
                     xiaoqu_name=name,
                     week=_demo_week(i),
-                    price=round(base_price + step * i, 2),
+                    price=round(price, 2),
                     supply=supply,
                     vol30=vol30,
                     bargain=bargain,
                     heat=heat,
                 )
             )
+            # 下一期的增量：主趋势 step + 相位随小区错开的确定性波动（-50%~+50%）。
+            phase = ((i + idx) % 5 - 2) / 2.0
+            price += step * (1.0 + 0.5 * phase)
     result = pipeline.ingest(conn, records)
     return {"xiaoqu": result["xiaoqu"], "metrics": result["metrics"]}
 
