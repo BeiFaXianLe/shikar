@@ -1,0 +1,73 @@
+name: CI
+
+# pstack 落地的「shipping 前提」：合并前必须有可复跑的门禁。
+# 门禁口径统一走 scripts/verify.sh，本地和 CI 是同一套命令，避免「本地过了 CI 挂」。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # 每周一 02:00 UTC 跑一次依赖体检（见 deps-audit）
+    - cron: '0 2 * * 1'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify（pytest + 静态门禁）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 与生产一致：服务器是 Python 3.14
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+
+      - name: 一键验证
+        run: bash scripts/verify.sh
+
+  shellcheck:
+    name: shellcheck（发布脚本）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          # 只查本 PR 引入的脚本。deploy/refresh.sh 是既有生产数据脚本，
+          # 它有个既有的 SC2034（未使用的 TS），单独一次小改动修理，不混进本 PR。
+          shellcheck -S warning deploy/release.sh deploy/set-gh-token.sh scripts/verify.sh
+
+  deps-audit:
+    name: 依赖漏洞体检（仅定时/手动，不阻断合并）
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r backend/requirements-dev.txt || echo "::warning::依赖存在已知漏洞，见上（不阻断合并，按 P2 排期处理）"
