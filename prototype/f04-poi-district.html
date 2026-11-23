@@ -44,6 +44,22 @@
   .poi-row { cursor: default; }
   .coverage { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); padding: 6px 0 0; }
   .coverage .bad { color: var(--hot); }
+
+  /* 第二层筛选：学校阶段 / 医院等级，视觉上弱于第一行类型 tab */
+  .poi-tab.sub { font-size: 13px; padding: 3px 12px; color: var(--ink-faint); }
+  .poi-tab.sub.on { color: #101820; }
+  .poi-tab.sub-start { margin-left: 10px; }
+
+  /* 学校排名：排序行下方规则说明 + 列表行左侧名次徽章 */
+  .rank-note { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--ink-faint); }
+  .poi-main.has-rank { display: flex; align-items: center; gap: 10px; }
+  .poi-main.has-rank .poi-text { min-width: 0; }
+  .rank-badge {
+    flex: 0 0 auto; min-width: 2.6em; text-align: center;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--gold); background: var(--gold-soft);
+    border: 1px solid rgba(210, 170, 109, 0.35); border-radius: var(--r-sm); padding: 1px 6px;
+  }
 </style>
 </head>
 <body>
@@ -67,30 +83,42 @@
   "use strict";
 
   // 假数据：刻意复刻线上真实分布——绝大多数条目没有区，少数区名格式不统一。
+  // school.subtype 对应线上 /api/schools?stage=；hospital 的 grade（等级）与 ownership（性质）是两个独立维度。
   var DATA = {
     school: [
-      { name: "中关村第一小学", district: "海淀", grade: "重点", n: 42 },
-      { name: "中关村第二小学", district: "海淀", grade: "重点", n: 38 },
-      { name: "朝阳实验小学", district: "朝阳", grade: "重点", n: 33 },
-      { name: "史家胡同小学", district: "东城", grade: "重点", n: 29 },
-      { name: "北京第二实验小学", district: "西城", grade: "重点", n: 47 },
-      { name: "丰台第五小学", district: "丰台", grade: "普通", n: 21 },
-      { name: "通州潞河中学", district: "通州", grade: "普通", n: 26 },
-      { name: "昌平第二中学", district: "昌平", grade: "普通", n: 18 },
-      { name: "DayStar Academy", district: "", grade: "普通", n: 300 },
-      { name: "HD00-0403-0016地块托幼用地", district: "", grade: "普通", n: 3 },
-      { name: "育英学校", district: "海淀区", grade: "重点", n: 35 },
-      { name: "芳草地国际学校", district: "Chaoyang 朝阳区", grade: "重点", n: 31 }
+      { name: "中关村第一小学", district: "海淀", grade: "重点", subtype: "primary", n: 42 },
+      { name: "中关村第二小学", district: "海淀", grade: "重点", subtype: "primary", n: 38 },
+      { name: "朝阳实验小学", district: "朝阳", grade: "重点", subtype: "primary", n: 33 },
+      { name: "史家胡同小学", district: "东城", grade: "重点", subtype: "primary", n: 29 },
+      { name: "北京第二实验小学", district: "西城", grade: "重点", subtype: "primary", n: 47 },
+      { name: "丰台第五小学", district: "丰台", grade: "普通", subtype: "primary", n: 21 },
+      { name: "通州潞河中学", district: "通州", grade: "普通", subtype: "high", n: 26 },
+      { name: "昌平第二中学", district: "昌平", grade: "普通", subtype: "middle", n: 18 },
+      { name: "DayStar Academy", district: "", grade: "普通", subtype: "high", n: 300 },
+      { name: "HD00-0403-0016地块托幼用地", district: "", grade: "普通", subtype: "primary", n: 3 },
+      { name: "育英学校", district: "海淀区", grade: "重点", subtype: "primary", n: 35 },
+      { name: "芳草地国际学校", district: "Chaoyang 朝阳区", grade: "重点", subtype: "primary", n: 31 },
+      { name: "北京四中", district: "西城", grade: "重点", subtype: "high", n: 40 },
+      { name: "人大附中", district: "海淀", grade: "重点", subtype: "high", n: 44 },
+      { name: "首师大附中", district: "海淀", grade: "重点", subtype: "high", n: 37 },
+      { name: "北京八中", district: "西城", grade: "重点", subtype: "middle", n: 28 },
+      { name: "北京三帆中学", district: "西城", grade: "重点", subtype: "middle", n: 24 },
+      { name: "陈经纶中学", district: "朝阳", grade: "重点", subtype: "middle", n: 22 }
     ],
     hospital: [
-      { name: "北京协和医院", district: "东城", grade: "三甲", n: 120 },
-      { name: "中日友好医院", district: "朝阳", grade: "三甲", n: 96 },
-      { name: "北京大学第三医院", district: "海淀", grade: "三甲", n: 88 },
-      { name: "天坛医院", district: "丰台", grade: "三甲", n: 61 },
-      { name: "通州区潞河医院", district: "通州区", grade: "三甲", n: 44 },
-      { name: "石景山医院", district: "石景山区", grade: "三甲", n: 33 },
-      { name: "某社区门诊部", district: "", grade: "社区", n: 4 },
-      { name: "八里庄社区卫生服务中心", district: "", grade: "社区", n: 6 }
+      { name: "北京协和医院", district: "东城", grade: "三甲", ownership: "公办", n: 120 },
+      { name: "中日友好医院", district: "朝阳", grade: "三甲", ownership: "公办", n: 96 },
+      { name: "北京大学第三医院", district: "海淀", grade: "三甲", ownership: "公办", n: 88 },
+      { name: "天坛医院", district: "丰台", grade: "三甲", ownership: "公办", n: 61 },
+      { name: "通州区潞河医院", district: "通州区", grade: "三甲", ownership: "公办", n: 44 },
+      { name: "石景山医院", district: "石景山区", grade: "三甲", ownership: "公办", n: 33 },
+      { name: "北京市第六医院", district: "东城", grade: "二甲", ownership: "公办", n: 52 },
+      { name: "海淀医院", district: "海淀", grade: "二甲", ownership: "公办", n: 47 },
+      { name: "朝阳区第二医院", district: "朝阳", grade: "二甲", ownership: "公办", n: 38 },
+      { name: "北京和睦家医院", district: "朝阳", grade: "三甲", ownership: "民办", n: 41 },
+      { name: "北京美中宜和妇儿医院", district: "海淀", grade: "二甲", ownership: "民办", n: 27 },
+      { name: "某社区门诊部", district: "", grade: "", ownership: "社区", n: 4 },
+      { name: "八里庄社区卫生服务中心", district: "", grade: "", ownership: "社区", n: 6 }
     ],
     hsr: [
       { name: "北京南站", district: "丰台", grade: "", n: 300 },
@@ -113,10 +141,18 @@
     return s;
   }
 
+  // 第二层筛选：学校阶段 / 医院等级 + 医院性质（等级与性质是两个维度，各占一行）
+  var STAGES = [["primary", "小学"], ["middle", "初中"], ["high", "高中"]];
+  var GRADES = [["", "全部"], ["三甲", "三甲"], ["二甲", "二甲"]];
+  var OWNERS = [["", "全部"], ["公办", "公办"], ["民办", "民办"], ["社区", "社区"]];
+
   var app = document.getElementById("app");
   var type = "school";
+  var stage = "primary";    // 学校阶段：primary | middle | high
+  var grade = "";           // 医院等级："" | 三甲 | 二甲
+  var owner = "";           // 医院性质："" | 公办 | 民办 | 社区
   var picked = {};          // district -> true
-  var sort = "count";       // count | name
+  var sort = "rank";        // count | name | rank（rank 仅学校）
 
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function (c) {
@@ -126,9 +162,21 @@
 
   function rows() { return DATA[type]; }
 
+  // 类型 → 阶段/等级 → 性质，三层之后的全量（区域筛选在下一层）
+  function stageRows() {
+    var list = rows();
+    if (type === "school" && stage) list = list.filter(function (it) { return it.subtype === stage; });
+    if (type === "hospital") {
+      if (grade) list = list.filter(function (it) { return it.grade === grade; });
+      if (owner) list = list.filter(function (it) { return it.ownership === owner; });
+    }
+    return list;
+  }
+
+  // 区域胶囊跟着阶段/等级重算：不会出现「选了小学还列出只有初中的区」
   function districts() {
     var m = {};
-    rows().forEach(function (it) {
+    stageRows().forEach(function (it) {
       var d = normDistrict(it.district);
       if (!d) return;
       m[d] = (m[d] || 0) + 1;
@@ -138,28 +186,51 @@
     });
   }
 
+  // 学校排名：综合热度 = 周边小区数 × 等级系数（重点校 1.5，普通校 1.0），降序；同分按名称。
+  function rankScore(it) { return it.n * (it.grade === "重点" ? 1.5 : 1.0); }
+  function byRank(a, b) {
+    return rankScore(b) - rankScore(a) || a.name.localeCompare(b.name, "zh");
+  }
+
   function filtered() {
-    var list = rows();
+    var list = stageRows();
     var keys = Object.keys(picked).filter(function (k) { return picked[k]; });
     if (keys.length) {
       list = list.filter(function (it) { return keys.indexOf(normDistrict(it.district)) >= 0; });
     }
     list = list.slice();
-    if (sort === "count") list.sort(function (a, b) { return b.n - a.n; });
+    // 名次在当前筛选结果（阶段/等级 + 区域）内计算，不跨阶段混排
+    var rankMap = {};
+    list.slice().sort(byRank).forEach(function (it, i) { rankMap[it.name] = i + 1; });
+    if (sort === "rank") list.sort(byRank);
+    else if (sort === "count") list.sort(function (a, b) { return b.n - a.n; });
     else list.sort(function (a, b) { return a.name.localeCompare(b.name, "zh"); });
-    return list;
+    return { list: list, rank: rankMap };
   }
 
   function coverage() {
-    var all = rows();
+    var all = stageRows();
     var withD = all.filter(function (it) { return normDistrict(it.district); }).length;
     var pct = all.length ? Math.round(withD / all.length * 100) : 0;
     return { all: all.length, withD: withD, pct: pct };
   }
 
+  // 一行「标签 + 胶囊」筛选（医院等级 / 性质复用）
+  function dpRow(label, attr, opts, cur) {
+    return '<div class="dp-row">' +
+      '<span class="k">' + esc(label) + '</span>' +
+      opts.map(function (p) {
+        return '<button class="dp-link' + (cur === p[0] ? " on" : "") + '" data-' + attr + '="' + esc(p[0]) +
+          '" type="button">' + esc(p[1]) + '</button>';
+      }).join("") +
+    '</div>';
+  }
+
   function render() {
     var ds = districts();
-    var list = filtered();
+    var res = filtered();
+    var list = res.list;
+    var rankMap = res.rank;
     var cov = coverage();
 
     app.innerHTML =
@@ -171,10 +242,17 @@
         '<button class="poi-tab' + (type === "school" ? " on" : "") + '" data-type="school" type="button">学校</button>' +
         '<button class="poi-tab' + (type === "hospital" ? " on" : "") + '" data-type="hospital" type="button">医院</button>' +
         '<button class="poi-tab' + (type === "hsr" ? " on" : "") + '" data-type="hsr" type="button">高铁站</button>' +
+        // 学校阶段（医院等级/性质在下面的 dp-bar 里，各占一行带标签）
+        (type === "school" ? STAGES : []).map(function (p, i) {
+          return '<button class="poi-tab sub' + (i === 0 ? " sub-start" : "") + (stage === p[0] ? " on" : "") +
+            '" data-sub="' + esc(p[0]) + '" type="button">' + esc(p[1]) + '</button>';
+        }).join("") +
       '</div>' +
 
       // 区域筛选（大众点评式：一行「区域」+ 一行「排序」）
       '<div class="dp-bar">' +
+        // 医院：等级、性质两个维度各一行，避免混在一行互相打架
+        (type === "hospital" ? dpRow("等级", "grade", GRADES, grade) + dpRow("性质", "owner", OWNERS, owner) : "") +
         '<div class="dp-row">' +
           '<span class="k">区域</span>' +
           '<button class="dp-link' + (Object.keys(picked).filter(function (k) { return picked[k]; }).length ? "" : " on") + '" data-district="" type="button">全部</button>' +
@@ -185,9 +263,15 @@
         '</div>' +
         '<div class="dp-row">' +
           '<span class="k">排序</span>' +
+          (type === "school"
+            ? '<button class="dp-link' + (sort === "rank" ? " on" : "") + '" data-sort="rank" type="button">学校排名</button>'
+            : "") +
           '<button class="dp-link' + (sort === "count" ? " on" : "") + '" data-sort="count" type="button">周边小区最多</button>' +
           '<button class="dp-link' + (sort === "name" ? " on" : "") + '" data-sort="name" type="button">名称</button>' +
         '</div>' +
+        (type === "school" && sort === "rank"
+          ? '<p class="rank-note">排名规则：综合热度 = 周边小区数 × 等级系数（重点校 1.5，普通校 1.0），按综合热度降序；同分按名称排序。名次在当前筛选结果内计算（同一阶段、已选区域）。仅反映本站已收录小区的覆盖情况，不是教委官方排名。</p>'
+          : "") +
       '</div>' +
 
       '<div class="result-count">共 ' + list.length + ' 条' +
@@ -196,12 +280,20 @@
 
       '<div class="poi-list">' + (list.length ? list.map(function (it) {
         var d = normDistrict(it.district);
+        var showRank = type === "school" && sort === "rank";
+        // 医院展示「等级 · 性质」，社区类没有等级只显示性质
+        var g = type === "hospital"
+          ? [it.grade, it.ownership].filter(Boolean).join(" · ")
+          : it.grade;
         return '<div class="poi-row">' +
-          '<div class="poi-main">' +
-            '<div class="poi-name">' + esc(it.name) + '</div>' +
-            '<div class="poi-meta">' +
-              (d ? esc(d) : '<span class="bad">区未知</span>') +
-              (it.grade ? " · " + esc(it.grade) : "") +
+          '<div class="poi-main' + (showRank ? " has-rank" : "") + '">' +
+            (showRank ? '<span class="rank-badge">#' + rankMap[it.name] + '</span>' : "") +
+            '<div class="poi-text">' +
+              '<div class="poi-name">' + esc(it.name) + '</div>' +
+              '<div class="poi-meta">' +
+                (d ? esc(d) : '<span class="bad">区未知</span>') +
+                (g ? " · " + esc(g) : "") +
+              '</div>' +
             '</div>' +
           '</div>' +
           '<div class="poi-count">' + it.n + ' 个周边小区</div>' +
@@ -218,6 +310,31 @@
     app.querySelectorAll("[data-type]").forEach(function (b) {
       b.addEventListener("click", function () {
         type = b.getAttribute("data-type");
+        picked = {};
+        sort = type === "school" ? "rank" : "count";
+        stage = "primary";
+        grade = "";
+        owner = "";
+        render();
+      });
+    });
+    app.querySelectorAll("[data-sub]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        stage = b.getAttribute("data-sub");
+        picked = {};   // 阶段变了，原先选中的区可能已不存在
+        render();
+      });
+    });
+    app.querySelectorAll("[data-grade]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        grade = b.getAttribute("data-grade");
+        picked = {};
+        render();
+      });
+    });
+    app.querySelectorAll("[data-owner]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        owner = b.getAttribute("data-owner");
         picked = {};
         render();
       });
@@ -248,6 +365,8 @@
       '所以即使有值也筛不准。前端也没有区域筛选控件。' +
       '<b>三件事一起做</b>：① 数据侧回填 district（可用最近小区的区，抽样 14/20 能补上）；' +
       '② 统一区名（去「区」后缀、剥离英文前缀）；③ 前端加这一行区域筛选，与「找小区」的区筛选同一套区名。' +
+      '<b>医院性质（公办 / 民办 / 社区）为新增字段</b>：库里 poi 表只有 grade（三甲 / 二甲），没有性质维度，' +
+      '需数据侧采集或人工标注；本原型用假数据演示筛选与展示。' +
       '</p>';
   }
 
