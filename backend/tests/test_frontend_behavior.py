@@ -27,7 +27,7 @@ import pytest
 
 from shikar import subway
 from shikar.api import create_server
-from shikar.storage import init_db, upsert_metric, upsert_xiaoqu
+from shikar.storage import init_db, upsert_metric, upsert_poi, upsert_xiaoqu
 
 _EDGE_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -78,6 +78,17 @@ def _seed(conn: sqlite3.Connection) -> None:
                             "absorb": None, "bargain": None, "heat": None,
                             "temperature": None, "stage": None})
     subway.import_geojson(conn, _GEOJSON, community_crs="wgs84")
+
+    # 医院：等级 / 性质两行与 ownership 筛选的断言数据。
+    for pid, grade, ownership in (("H1", "三甲", "公办"),
+                                  ("H2", "二甲", "民办"),
+                                  ("H3", None, "社区")):
+        upsert_poi(conn, {
+            "id": pid, "type": "hospital", "subtype": None, "name": pid,
+            "city": "北京", "grade": grade, "ownership": ownership,
+            "lat": 39.9, "lng": 116.4, "district": "东城",
+            "address": None, "source": "test", "version": "2026-11",
+        })
 
 
 def _http_json(port: int, path: str, timeout: float = 5.0):
@@ -133,6 +144,23 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   out.gaugeLabel=await ev(`(function(){var e=document.querySelector('.gauge-temp .label');return e?e.textContent:'none';})()`);
   out.readingsTitle=await ev(`(function(){var e=document.querySelector('.city-readings .cr-title');return e?e.textContent:'none';})()`);
   out.readingsBody=await ev(`(function(){var e=document.querySelector('.city-readings .cr-body');return e?e.textContent:'none';})()`);
+  // 医院：等级 / 性质两行，切性质能收敛列表
+  await send('Page.navigate',{url:`http://127.0.0.1:${BASE_PORT}/#/hospitals`});
+  await sleep(1600);
+  out.hospitalFilterRows=await ev(`[].map.call(document.querySelectorAll('.poi-bar-row'),r=>[].map.call(r.querySelectorAll('.poi-tab'),b=>b.textContent)).filter(a=>a.length)`);
+  out.hospitalLabels=await ev(`[].map.call(document.querySelectorAll('.poi-bar-label'),e=>e.textContent)`);
+  out.hospitalRows=await ev(`document.querySelectorAll('.poi-row').length`);
+  await ev(`(function(){var b=[].find.call(document.querySelectorAll('.poi-tab'),x=>x.textContent==='社区');b.click();return true;})()`);
+  await sleep(1400);
+  out.communityRows=await ev(`document.querySelectorAll('.poi-row').length`);
+  out.communityMeta=await ev(`[].map.call(document.querySelectorAll('.poi-meta'),e=>e.textContent)`);
+  // 切到学校：性质行消失；再回医院：筛选复位为「全部」
+  await send('Page.navigate',{url:`http://127.0.0.1:${BASE_PORT}/#/schools`});
+  await sleep(1400);
+  out.schoolLabels=await ev(`[].map.call(document.querySelectorAll('.poi-bar-label'),e=>e.textContent)`);
+  await send('Page.navigate',{url:`http://127.0.0.1:${BASE_PORT}/#/hospitals`});
+  await sleep(1400);
+  out.ownerActiveAfterSwitch=await ev(`(function(){var rows=document.querySelectorAll('.poi-bar-row');var r=rows[1];var on=r&&r.querySelector('.poi-tab.on');return on?on.textContent:'none';})()`);
   console.log(JSON.stringify(out));
   process.exit(0);
 })().catch(e=>{console.log(JSON.stringify({err:String(e&&e.message||e)}));process.exit(0);});
@@ -228,6 +256,24 @@ def test_frontend_clear_period(browser_env):
     assert any("期次" in c for c in out["chipsWithPeriod"]), out["chipsWithPeriod"]
     assert not any("期次" in c for c in out["chipsAfterClear"]), out["chipsAfterClear"]
     assert "price_week" not in (out.get("hashAfterClear") or ""), out.get("hashAfterClear")
+
+
+def test_frontend_hospital_ownership_rows(browser_env):
+    """医院页有「等级」「性质」两行；切性质收敛列表；学校页无性质行；切回医院复位。"""
+    out = _run_node_harness(browser_env["cdp_port"], browser_env["base_port"])
+    assert "err" not in out, out
+    rows = out["hospitalFilterRows"]
+    # 第一行等级（不含「未知」），第二行性质
+    assert rows[0] == ["全部", "三甲", "二甲"], rows
+    assert rows[1] == ["全部", "公办", "民办", "社区"], rows
+    assert out["hospitalLabels"][:2] == ["等级", "性质"], out["hospitalLabels"]
+    assert out["hospitalRows"] == 3, out["hospitalRows"]
+
+    assert out["communityRows"] == 1, out["communityRows"]
+    assert any("社区" in m for m in out["communityMeta"]), out["communityMeta"]
+
+    assert out["schoolLabels"] == ["阶段"], out["schoolLabels"]
+    assert out["ownerActiveAfterSwitch"] == "全部", out["ownerActiveAfterSwitch"]
 
 
 def test_frontend_home_readings_layer(browser_env):

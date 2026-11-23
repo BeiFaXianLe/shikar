@@ -2004,12 +2004,13 @@
     school: { title: "学校", api: "/api/schools",
       stages: [["primary", "小学"], ["middle", "初中"], ["high", "高中"]] },
     hospital: { title: "医院", api: "/api/hospitals",
-      grades: [["", "全部"], ["三甲", "三甲"], ["二甲", "二甲"], ["未知", "未知"]] },
+      grades: [["", "全部"], ["三甲", "三甲"], ["二甲", "二甲"]],
+      owners: [["", "全部"], ["公办", "公办"], ["民办", "民办"], ["社区", "社区"]] },
     hsr: { title: "高铁站", api: "/api/hsr" },
   };
   var poiUI = {
     school: { stage: "primary", city: "", q: "" },
-    hospital: { grade: "", city: "", q: "" },
+    hospital: { grade: "", owner: "", city: "", q: "" },
     hsr: { city: "", q: "" },
   };
 
@@ -2017,9 +2018,18 @@
     return type === "school" ? "#/schools" : (type === "hospital" ? "#/hospitals" : "#/hsr");
   }
 
+  var lastPoiType = null;
+
   function renderPoiMenu(type) {
     var cfg = POI_CFG[type];
     var ui = poiUI[type];
+    // 切换类型时把筛选复位为默认（与原型一致），避免残留上一个类别的高亮/空结果。
+    if (lastPoiType && lastPoiType !== type) {
+      if (ui.stage !== undefined) ui.stage = "primary";
+      if (ui.grade !== undefined) ui.grade = "";
+      if (ui.owner !== undefined) ui.owner = "";
+    }
+    lastPoiType = type;
     appEl.innerHTML = "";
     appEl.appendChild(el("div", { class: "page-head" }, [
       el("h1", { text: cfg.title }),
@@ -2029,16 +2039,22 @@
     ]));
 
     var bar = el("div", { class: "poi-bar" });
-    (cfg.stages || []).forEach(function (p) {
-      var b = el("button", { class: "poi-tab" + (ui.stage === p[0] ? " on" : ""), type: "button", text: p[1] });
-      b.addEventListener("click", function () { ui.stage = p[0]; renderPoiMenu(type); });
-      bar.appendChild(b);
-    });
-    (cfg.grades || []).forEach(function (p) {
-      var b = el("button", { class: "poi-tab" + (ui.grade === p[0] ? " on" : ""), type: "button", text: p[1] });
-      b.addEventListener("click", function () { ui.grade = p[0]; renderPoiMenu(type); });
-      bar.appendChild(b);
-    });
+    // 每个维度单独一行：学校阶段、医院等级、医院性质。
+    function filterRow(label, opts, current, onPick) {
+      var row = el("div", { class: "poi-bar-row" });
+      row.appendChild(el("span", { class: "poi-bar-label", text: label }));
+      opts.forEach(function (p) {
+        var b = el("button", { class: "poi-tab" + (current === p[0] ? " on" : ""), type: "button", text: p[1] });
+        b.addEventListener("click", function () { onPick(p[0]); renderPoiMenu(type); });
+        row.appendChild(b);
+      });
+      return row;
+    }
+    if (cfg.stages) bar.appendChild(filterRow("阶段", cfg.stages, ui.stage, function (v) { ui.stage = v; }));
+    if (cfg.grades) bar.appendChild(filterRow("等级", cfg.grades, ui.grade, function (v) { ui.grade = v; }));
+    if (cfg.owners) bar.appendChild(filterRow("性质", cfg.owners, ui.owner, function (v) { ui.owner = v; }));
+
+    var barMeta = el("div", { class: "poi-bar-row" });
     var citySel = el("select", { class: "district-select", "aria-label": "城市" }, [
       el("option", { value: "", text: "京津全部" }),
       el("option", { value: "北京", text: "北京" }),
@@ -2046,7 +2062,7 @@
     ]);
     citySel.value = ui.city || "";
     citySel.addEventListener("change", function () { ui.city = citySel.value; renderPoiMenu(type); });
-    bar.appendChild(citySel);
+    barMeta.appendChild(citySel);
 
     // 搜索框：按名称 / 地址包含匹配。输入防抖 300ms，回车立即触发，Esc 清空。
     var searchInput = el("input", {
@@ -2071,7 +2087,8 @@
       if (e.key === "Enter") { if (debounceTimer) clearTimeout(debounceTimer); applySearch(); }
       else if (e.key === "Escape") { searchInput.value = ""; if (debounceTimer) clearTimeout(debounceTimer); applySearch(); }
     });
-    bar.appendChild(searchInput);
+    barMeta.appendChild(searchInput);
+    bar.appendChild(barMeta);
     appEl.appendChild(bar);
 
     // 有搜索词时给一行「清空」提示，避免用户不知道列表被过滤了
@@ -2096,6 +2113,7 @@
     if (ui.city) params.city = ui.city;
     if (cfg.stages && ui.stage) params.stage = ui.stage;
     if (cfg.grades && ui.grade) params.grade = ui.grade;
+    if (cfg.owners && ui.owner) params.ownership = ui.owner;
     if (ui.q) params.q = ui.q;
 
     getJSON(cfg.api + buildQuery(params)).then(function (data) {
@@ -2106,7 +2124,7 @@
         var row = el("a", { class: "poi-row", href: "javascript:void(0)" }, [
           el("div", { class: "poi-main" }, [
             el("div", { class: "poi-name", text: it.name || it.id }),
-            el("div", { class: "poi-meta", text: [it.city, it.district, it.grade].filter(Boolean).join(" · ") }),
+            el("div", { class: "poi-meta", text: [it.city, it.district, it.grade, it.ownership].filter(Boolean).join(" · ") }),
           ]),
           el("div", { class: "poi-count", text: (it.community_count || 0) + " 个周边小区" }),
         ]);
