@@ -37,3 +37,11 @@ data/fang_preview_all.csv
 # 恢复备份时旧文件的留档
 *.pre-restore
 
+
+# 部署产物（deploy/release.sh 生成，不能进版本库）
+# 不加这三条，每次发布后服务器 git status 都会变脏，下次就会有人以为代码漂移
+/.deployed-release
+/.releases/
+
+# 历史遗留的固定名/日期备份（old 时代的整库快照，非构建产物）
+data/*.bak-*
