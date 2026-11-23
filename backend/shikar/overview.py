@@ -24,6 +24,11 @@
   * ``top_hot`` / ``top_cold``：分别按 ``temperature`` 降序 / 升序，各至多 5 条；
   * ``top_rising`` / ``top_falling``：分别按 ``mom4`` 降序 / 升序，各至多 5 条，
     且**只包含 ``mom4`` 非空的行**；
+  * ``readings``：**读数层**。门槛不达标的小区不给温度与趋势，但它们的真实价格
+    不该跟着一起丢掉（docs/04 §0.4「不足则只给读数」），因此单独统计：
+    ``with_price``（有价格读数的小区数）、``total``（同上级）、
+    ``median_price``（各小区最新一期价格的中位数）、``with_mom``（可算环比的小区数）、
+    ``median_mom``（环比中位数，与 ``mom4`` 同口径：分数，-0.12 即 -12%）；
 * ``cities`` 按 city 名称升序排列。
 
 可选过滤（向后兼容）：
@@ -37,6 +42,7 @@
 from __future__ import annotations
 
 import sqlite3
+import statistics
 from typing import Optional
 
 from . import storage
@@ -70,6 +76,28 @@ def _latest_index(series: list[dict]) -> Optional[int]:
         if series[i].get("temperature") is not None:
             return i
     return None
+
+
+def _latest_priced_row(series: list[dict]) -> Optional[dict]:
+    """取某小区指标序列中最后一条 ``price`` 非空的行。
+
+    用途：首页「读数层」。门槛不足的小区不给温度与趋势，但仍然有真实成交/挂牌
+    价格——这部分读数不该跟着一起丢掉（docs/04 §0.4「不足则只给读数」）。
+
+    :param series: 按 ``week`` 升序的指标行列表。
+    :return: 最后一条有价格的行；全序列无价格则 ``None``。
+    """
+    for row in reversed(series):
+        if row.get("price") is not None:
+            return row
+    return None
+
+
+def _median_or_none(values: list[float], digits: int = 1) -> Optional[float]:
+    """中位数，空列表返回 ``None``（保留 ``digits`` 位小数）。"""
+    if not values:
+        return None
+    return round(statistics.median(values), digits)
 
 
 def _prev_row(series: list[dict], latest_index: int) -> tuple[Optional[dict], Optional[int]]:
@@ -144,8 +172,9 @@ def compute_overview(
         表示不限区。
     :return: 形如 ``{"week": <str|None>, "cities": [...]}`` 的字典；城市项含
         ``temperature`` / ``count`` / ``total`` / ``insufficient`` /
-        ``insufficient_ratio`` 与四类榜单。空库或过滤后无数据时返回
-        ``{"week": None, "cities": []}``。
+        ``insufficient_ratio`` 与四类榜单；另有 ``readings`` 读数层
+        （``with_price`` / ``total`` / ``median_price`` / ``with_mom`` / ``median_mom``）。
+        空库或过滤后无数据时返回 ``{"week": None, "cities": []}``。
     """
     xiaoqu_list = storage.list_xiaoqu(conn, city=city, district=district)
 
@@ -157,6 +186,8 @@ def compute_overview(
     district_stats: dict[str, dict[str, dict]] = {}
     # city -> 周变化累计：可用配对的和 + 无可用上期的个数。
     delta_stats: dict[str, dict] = {}
+    # city -> 读数层累计：最新价列表 + 可算环比的 mom4 列表（docs/04 §0.4）。
+    reading_stats: dict[str, dict] = {}
     weeks: list[str] = []
 
     for xiaoqu in xiaoqu_list:
@@ -182,6 +213,14 @@ def compute_overview(
         week = last.get("week")
         if week is not None:
             weeks.append(week)
+
+        # 读数层：无论温度是否达标，只要有价格就读数（docs/04 §0.4）。
+        priced = _latest_priced_row(series)
+        if priced is not None:
+            rstat = reading_stats.setdefault(city_name, {"prices": [], "moms": []})
+            rstat["prices"].append(priced["price"])
+            if priced.get("mom4") is not None:
+                rstat["moms"].append(priced["mom4"])
 
         idx = _latest_index(series)
         if idx is None:
@@ -220,6 +259,16 @@ def compute_overview(
         dst = delta_stats.get(city_name, {"sums": [], "missing": 0})
         delta_sums = dst["sums"]
         delta_missing = dst["missing"]
+        # 读数层：不足小区也给读数，因此与「合格小区」分开统计。
+        rst = reading_stats.get(city_name, {"prices": [], "moms": []})
+        readings_out = {
+            "with_price": len(rst["prices"]),
+            "total": total,
+            "median_price": _median_or_none(rst["prices"]),
+            "with_mom": len(rst["moms"]),
+            # mom4 与 api 其余字段同样口径：分数（-0.12 即 -12%），前端乘 100 展示
+            "median_mom": _median_or_none(rst["moms"], digits=4),
+        }
         districts_out = []
         for district_name, dstat in district_stats.get(city_name, {}).items():
             dtemps = dstat["temps"]
@@ -230,8 +279,10 @@ def compute_overview(
                 "count": dstat["count"],
                 "total": dtotal,
                 "insufficient": dstat["insufficient"],
+                # 保留 4 位：3 位时 10550/10554 会被四舍五入成 1.0，把「还有几个
+                # 合格小区」这一事实抹平（docs/45 P1-2）。
                 "insufficient_ratio": (
-                    round(dstat["insufficient"] / dtotal, 3) if dtotal else 0.0
+                    round(dstat["insufficient"] / dtotal, 4) if dtotal else 0.0
                 ),
             })
         # 温度降序，null 排最后；同值按区名升序。
@@ -245,8 +296,10 @@ def compute_overview(
                 "count": len(items),
                 "total": total,
                 "insufficient": n_insufficient,
+                # 保留 4 位：3 位时 10550/10554 会被四舍五入成 1.0，把「还有几个
+                # 合格小区」这一事实抹平（docs/45 P1-2）。
                 "insufficient_ratio": (
-                    round(n_insufficient / total, 3) if total else 0.0
+                    round(n_insufficient / total, 4) if total else 0.0
                 ),
                 "temperature_delta": (
                     round(sum(delta_sums) / len(delta_sums), 1) if delta_sums else None
@@ -257,6 +310,7 @@ def compute_overview(
                     round(delta_missing / len(items), 3) if items else 0.0
                 ),
                 "districts": districts_out,
+                "readings": readings_out,
                 "top_hot": _top(items, "temperature", reverse=True),
                 "top_cold": _top(items, "temperature", reverse=False),
                 "top_rising": _top(rising_source, "mom4", reverse=True),

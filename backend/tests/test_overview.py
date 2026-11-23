@@ -211,7 +211,8 @@ def test_skips_xiaoqu_without_temperature(conn: sqlite3.Connection) -> None:
     # 但它是「有数据、数据不足」，要计入 total 与 insufficient（docs/04 §3.2）。
     assert beijing["total"] == 3
     assert beijing["insufficient"] == 1
-    assert beijing["insufficient_ratio"] == round(1 / 3, 3)
+    # 精度为 4 位（docs/45 P1-2）：3 位会把 10550/10554 抹成 1.0。
+    assert beijing["insufficient_ratio"] == round(1 / 3, 4)
     names = {item["name"] for item in beijing["top_hot"]}
     assert "单周E" not in names
 
@@ -264,6 +265,77 @@ def _add_xq(conn, xid: str, district: str, rows: list[tuple[str, float | None]])
         storage.upsert_metric(conn, {
             "xiaoqu_id": xid, "week": week, "price": 50000.0, "temperature": temp,
         })
+
+
+# --------------------------------------------------------------------------- #
+# 读数层（readings）：不足小区也给读数，但不得影响温度、榜单与不足计数
+# --------------------------------------------------------------------------- #
+def _add_metric_xq(conn, xid: str, district: str,
+                   rows: list[tuple[str, float | None, float | None]]) -> None:
+    """写入带 ``price`` / ``mom4`` 的指标行（绕过门槛，便于精确构造读数层用例）。
+
+    :param rows: ``(week, price, mom4)`` 三元组列表。
+    """
+    storage.upsert_xiaoqu(conn, {
+        "id": xid, "city": "北京", "district": district, "plate": "望京", "name": xid,
+    })
+    for week, price, mom4 in rows:
+        storage.upsert_metric(conn, {
+            "xiaoqu_id": xid, "week": week, "price": price, "mom4": mom4,
+        })
+
+
+def test_overview_readings_include_insufficient(empty_conn: sqlite3.Connection) -> None:
+    """门槛不足的小区没有温度，但它的价格读数仍应计入读数层。
+
+    场景：北京有两小区——一个 6 期（合格）、一个 1 期（不足）。
+    期望 ``count==1``（只有合格者）、``insufficient==1``，而
+    ``readings.with_price==2``（两者都有价格）。这正是首页「温度留空但读数仍在」
+    的依据（docs/04 §0.4）。
+    """
+    ingest(empty_conn, _linear_records("北京", "朝阳", "六期合格", 50000.0, 1000.0))
+    ingest(empty_conn, _linear_records("北京", "海淀", "单期不足", 70000.0, 0.0, weeks=1))
+
+    city = compute_overview(empty_conn)["cities"][0]
+    assert city["count"] == 1
+    assert city["insufficient"] == 1
+    assert city["readings"]["with_price"] == 2
+    assert city["readings"]["total"] == 2
+    # 最新价：55000 与 70000 的中位数
+    assert city["readings"]["median_price"] == 62500.0
+
+
+def test_overview_readings_mom4_fraction_and_median(empty_conn: sqlite3.Connection) -> None:
+    """``median_mom`` 保持与 ``mom4`` 同口径（分数，非百分数），且只统计非空值。"""
+    _add_metric_xq(empty_conn, "M1", "朝阳", [("2024-W01", 50000.0, None),
+                                               ("2024-W05", 51000.0, 0.02)])
+    _add_metric_xq(empty_conn, "M2", "海淀", [("2024-W01", 60000.0, None),
+                                               ("2024-W05", 63000.0, 0.06)])
+    # 第三个小区只有一期、无 mom4，不应拉低分母之外的东西
+    _add_metric_xq(empty_conn, "M3", "东城", [("2024-W05", 40000.0, None)])
+
+    readings = compute_overview(empty_conn)["cities"][0]["readings"]
+    assert readings["with_price"] == 3
+    assert readings["with_mom"] == 2
+    # 0.02 与 0.06 的中位数 = 0.04（分数），不是 2.0（百分数）
+    assert readings["median_mom"] == 0.04
+    # 最新价 51000 / 63000 / 40000 的中位数
+    assert readings["median_price"] == 51000.0
+
+
+def test_overview_readings_empty_when_no_price(empty_conn: sqlite3.Connection) -> None:
+    """全部小区都没有价格时：读数层各项为 0/None，不留空字段缺失。"""
+    storage.upsert_xiaoqu(empty_conn, {
+        "id": "N1", "city": "北京", "district": "朝阳", "plate": "望京", "name": "N1",
+    })
+    storage.upsert_metric(empty_conn, {
+        "xiaoqu_id": "N1", "week": "2024-W05", "price": None, "temperature": None,
+    })
+    city = compute_overview(empty_conn)["cities"][0]
+    assert city["readings"] == {
+        "with_price": 0, "total": 1, "median_price": None,
+        "with_mom": 0, "median_mom": None,
+    }
 
 
 def test_overview_delta_from_prev_observation(empty_conn: sqlite3.Connection) -> None:
@@ -368,11 +440,17 @@ def test_api_overview(live_server: dict) -> None:
             "city", "temperature", "count",
                 "total", "insufficient", "insufficient_ratio",
                 "temperature_delta", "delta_count", "delta_insufficient",
-                "delta_insufficient_ratio", "districts",
+                "delta_insufficient_ratio", "districts", "readings",
             "top_hot", "top_cold", "top_rising", "top_falling",
         }
         assert isinstance(city["temperature"], float)
         assert city["count"] == 2
+        # 读数层：不判趋势，只给读数（docs/04 §0.4）。
+        assert set(city["readings"]) == {
+            "with_price", "total", "median_price", "with_mom", "median_mom",
+        }
+        assert city["readings"]["with_price"] == 2
+        assert city["readings"]["total"] == 2
 
 
 # --------------------------------------------------------------------------- #

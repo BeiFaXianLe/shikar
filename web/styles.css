@@ -257,6 +257,25 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
   color: var(--ink-soft);
   letter-spacing: 0.03em;
 }
+/* 读数层：门槛不足时仍给真实读数，视觉上与温度结论区分开（虚线边框、无强调色） */
+.city-readings {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--line, rgba(0, 0, 0, 0.14));
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+}
+.city-readings .cr-title {
+  font-size: 11px;
+  opacity: 0.75;
+  margin-bottom: 2px;
+}
+.city-readings .cr-body {
+  font-variant-numeric: tabular-nums;
+}
 .district-heat {
   margin: 10px 0 4px;
   padding: 8px 10px;
