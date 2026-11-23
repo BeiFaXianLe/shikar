@@ -125,6 +125,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             name     TEXT NOT NULL,
             city     TEXT,
             grade    TEXT,
+            ownership TEXT,
             lat      REAL,
             lng      REAL,
             district TEXT,
@@ -164,6 +165,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # 幂等迁移：``CREATE TABLE IF NOT EXISTS`` 对线上已存在的 poi 表不会加列。
+    # 旧库升级时在这里补 ownership（医院性质：公办/民办/社区），可重复执行。
+    poi_cols = {r[1] for r in conn.execute("PRAGMA table_info(poi)")}
+    if "ownership" not in poi_cols:
+        conn.execute("ALTER TABLE poi ADD COLUMN ownership TEXT")
     conn.commit()
 
 
@@ -401,13 +407,14 @@ def list_signals(conn: sqlite3.Connection, xiaoqu_id: str) -> list[dict]:
 def upsert_poi(conn: sqlite3.Connection, row: Mapping) -> None:
     """按 id upsert 一条 POI。row 需含 id,type,name。"""
     conn.execute(
-        "INSERT INTO poi (id,type,subtype,name,city,grade,lat,lng,district,address,source,version) "
-        "VALUES (:id,:type,:subtype,:name,:city,:grade,:lat,:lng,:district,:address,:source,:version) "
+        "INSERT INTO poi (id,type,subtype,name,city,grade,ownership,lat,lng,district,address,source,version) "
+        "VALUES (:id,:type,:subtype,:name,:city,:grade,:ownership,:lat,:lng,:district,:address,:source,:version) "
         "ON CONFLICT (id) DO UPDATE SET type=excluded.type,subtype=excluded.subtype,name=excluded.name,"
-        "city=excluded.city,grade=excluded.grade,lat=excluded.lat,lng=excluded.lng,district=excluded.district,"
-        "address=excluded.address,source=excluded.source,version=excluded.version",
+        "city=excluded.city,grade=excluded.grade,ownership=excluded.ownership,lat=excluded.lat,lng=excluded.lng,"
+        "district=excluded.district,address=excluded.address,source=excluded.source,version=excluded.version",
         {"id": row.get("id"), "type": row.get("type"), "subtype": row.get("subtype"),
-         "name": row.get("name"), "city": row.get("city"), "grade": row.get("grade"), "lat": row.get("lat"),
+         "name": row.get("name"), "city": row.get("city"), "grade": row.get("grade"),
+         "ownership": row.get("ownership"), "lat": row.get("lat"),
          "lng": row.get("lng"), "district": row.get("district"), "address": row.get("address"),
          "source": row.get("source"), "version": row.get("version")},
     )
@@ -422,9 +429,10 @@ def upsert_community_poi(conn: sqlite3.Connection, community_id: str, poi_id: st
 
 
 def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
-              grade: str | None = None, district: str | None = None,
-              city: str | None = None, q: str | None = None) -> list[dict]:
-    """列出某类 POI，可按阶段/等级/区/城市过滤，``q`` 为名称或地址包含匹配（大小写不敏感）。"""
+              grade: str | None = None, ownership: str | None = None,
+              district: str | None = None, city: str | None = None,
+              q: str | None = None) -> list[dict]:
+    """列出某类 POI，可按阶段/等级/性质/区/城市过滤，``q`` 为名称或地址包含匹配（大小写不敏感）。"""
     sql = ("SELECT p.*, "
            "(SELECT COUNT(*) FROM community_poi cp WHERE cp.poi_id = p.id) AS community_count "
            "FROM poi p WHERE p.type = ?")
@@ -433,6 +441,8 @@ def list_pois(conn: sqlite3.Connection, type_: str, subtype: str | None = None,
         sql += " AND p.subtype = ?"; params.append(subtype)
     if grade:
         sql += " AND p.grade = ?"; params.append(grade)
+    if ownership:
+        sql += " AND p.ownership = ?"; params.append(ownership)
     if city:
         sql += " AND p.city = ?"; params.append(city)
     if district:
