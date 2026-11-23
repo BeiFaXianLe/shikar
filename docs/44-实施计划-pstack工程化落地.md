@@ -2,7 +2,7 @@
 
 > 来源：宝拉 2026-11-23 11:22 在 shikar项目群说「按照建议全部开始实施」，采纳 `docs/19-pstack落地（shikar版）.md` 与同日对标 pstack 的差距分析（群记录 #24）。
 > 本文是**先方案后编码**里那份方案：先写清做哪些、怎么验、不做什么，再落文件。
-> 状态：仓库本地改动已完成并通过验证；**推送 / 开 PR / 改 GitHub 分支保护 / 首次上线仍等人点头**（见 §6）。
+> 状态：改动已提交、已推送，PR #43 已开且 CI 全绿；**仓库分支保护与首次真实上线仍等人点头**（见 §6）。
 
 ---
 
@@ -108,9 +108,9 @@ dry-run 后核对：`.releases/`、`.deployed-release` 均未生成，`systemctl
 
 | # | 事项 | 说明 | 我的建议 |
 |---|---|---|---|
-| 1 | 推送分支 + 开 PR | 本轮改动提交在本地分支，未 push（缺 Git 登录态）。push 与开 PR 后 CI 会真跑一次 | 先推分支开 PR，让 CI 实跑一遍门禁，再合并 |
-| 2 | 开启 main 分支保护 | 需要在 GitHub 仓库设置里勾「Require status checks: verify」，助手无权改仓库设置 | 由你或给权限的账号开；或给我一次带 Git 登录态的回合，我执行 `gh api` |
-| 3 | 首次真实发布 | `deploy/release.sh` 迄今只跑过 dry-run | 建议先用 `--ref <当前 main>` 发布一次（内容与线上一致，等于练手），确认幂等与回执无误 |
+| 1 | ~~推送分支 + 开 PR~~ | **已完成**：分支 `chore/pstack-cicd` 已推送，PR #43 已开，CI 全绿（Python 3.14，`304 passed, 3 skipped`） | — |
+| 2 | 开启 main 分支保护 | 实测 `branches/main/protection` 返回「Branch not protected」。需要在仓库设置里勾「Require status checks: verify」 | 由你开，或给一次授权我执行 `gh api` |
+| 3 | 首次真实发布 | `deploy/release.sh` 在真实 `/opt/shikar` 上只跑过 dry-run（零改动）；全路径已在 `/tmp` 副本演练通过 | A 建议：合并后用当前 main 发布一次（内容与线上一致，等于练手），确认幂等与回执 |
 | 4 | 是否修服务器 git 脏状态 | `git reset --hard origin/main` 能让元数据归位，但要先确认不牵连 `data/` | 可缓；发布脚本已不依赖它。修之前单独确认一次 |
 
 ---
