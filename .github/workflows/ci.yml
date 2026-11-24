@@ -5,6 +5,9 @@ name: CI
 
 on:
   pull_request:
+    # edited：PR 正文被改（审核/验证栏位填进正文）时要重跑，否则填完仍是红，只能靠空提交解堵。
+    # 代价：每次改正文会重跑整个 CI（concurrency 会取消进行中的旧运行）。
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -55,7 +58,43 @@ jobs:
           shellcheck --version
           # 只查本 PR 引入的脚本。deploy/refresh.sh 是既有生产数据脚本，
           # 它有个既有的 SC2034（未使用的 TS），单独一次小改动修理，不混进本 PR。
-          shellcheck -S warning deploy/release.sh deploy/set-gh-token.sh deploy/install-timers.sh scripts/verify.sh
+          shellcheck -S warning deploy/release.sh deploy/set-gh-token.sh deploy/install-timers.sh scripts/verify.sh scripts/check_pr_review.sh
+
+  pr-review-gate:
+    # name 就是分支保护引用的 check 名，改了就等于把门禁摘掉 —— 不要动。
+    name: 流程门禁
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 正文直接取事件负载，不调 GitHub API：少一次网络依赖，也不用给这个 job 额外 token 权限。
+      - name: 取出 PR 正文与作者
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          printf '%s\n' "${PR_BODY:-}" > "$RUNNER_TEMP/pr_body.md"
+          printf '%s\n' "$PR_AUTHOR" > "$RUNNER_TEMP/pr_author.txt"
+
+      - name: 自检：门禁自己先证明「能过」也能拦
+        # 门禁最怕的不是拦不住，而是永远红：那会让所有 PR 永久无法合并。
+        # 所以每次都用固定样本跑一遍：填齐要 PASS、缺栏位要 FAIL。
+        run: |
+          set -e
+          bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-filled.md --author fixture-author
+          echo "自检 1/2 通过：填齐的正文判 PASS"
+          if bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-missing.md --author fixture-author; then
+            echo "::error::自检失败：缺栏位的正文竟然也判 PASS"
+            exit 1
+          fi
+          echo "自检 2/2 通过：缺栏位的正文判 FAIL（预期返回 1）"
+
+      - name: 校验「审核三段式」与「独立验证三态」
+        run: |
+          bash scripts/check_pr_review.sh \
+            --body-file "$RUNNER_TEMP/pr_body.md" \
+            --author "$(cat "$RUNNER_TEMP/pr_author.txt")"
 
   deps-audit:
     name: 依赖漏洞体检（仅定时/手动，不阻断合并）
