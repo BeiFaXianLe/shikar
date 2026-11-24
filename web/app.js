@@ -1486,7 +1486,7 @@
       ]));
 
       var gradeSel = el("select", { class: "ff-select", "aria-label": "医院等级", id: "fd-grade" });
-      [["", "不限"], ["三甲", "三甲"], ["二甲", "二甲"], ["未知", "未知"]].forEach(function (p) {
+      [["", "不限"], ["三甲", "三甲"], ["二甲", "二甲"]].forEach(function (p) {
         var o = el("option", { value: p[0], text: p[1] }); if (draft.grade === p[0]) o.selected = true; gradeSel.appendChild(o);
       });
       gradeSel.addEventListener("change", function () { draft.grade = gradeSel.value; });

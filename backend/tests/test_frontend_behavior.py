@@ -124,6 +124,8 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   await sleep(400);
   out.priceRetained=await ev(`(function(){var i=document.querySelector('#fd-price-min');return i?i.value:'gone';})()`);
   out.focusInDrawer=await ev(`(function(){var a=document.activeElement;return a&&a.id||'(none)';})()`);
+  // 抽屉「医院等级」只给 不限/三甲/二甲（后端 grade 无「未知」值，选了必然 0 结果）
+  out.drawerGradeOptions=await ev(`[].map.call(document.querySelectorAll('#fd-grade option'),o=>o.textContent)`);
   await ev(`(function(){var c=document.querySelector('.fd-close');if(c)c.click();})()`);await sleep(200);
   // 单站深链
   await send('Page.navigate',{url:`http://127.0.0.1:${BASE_PORT}/#/catalog?city=`+encodeURIComponent('北京')+'&station='+encodeURIComponent('s1')+'&subway_max=1.5'});
@@ -240,6 +242,8 @@ def test_frontend_draft_focus_and_price_retained(browser_env):
     assert out["priceRetained"] == "60000", out
     # 焦点仍在抽屉内某控件上（不为 body/丢失）
     assert out["focusInDrawer"] not in ("(none)", "", "BODY"), out
+    # 医院等级下拉只给后端真实存在的取值，不出现「未知」
+    assert out["drawerGradeOptions"] == ["不限", "三甲", "二甲"], out["drawerGradeOptions"]
 
 
 def test_frontend_single_station_deeplink(browser_env):
