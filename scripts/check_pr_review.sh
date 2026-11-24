@@ -7,7 +7,10 @@
 #
 # 校验两项（缺任一即退出 1，并打印缺哪一项）：
 #   1) 「审核（三段式）」三张表（必改 / 建议改 / 可接受风险）都填了实质内容，不是表头或占位符；
-#   2) 「独立验证」的验证者字段非空、且不是 PR 作者本人；PASS / PASS+NOTES / FAIL 恰好勾一个。
+#   2) 「独立验证」的验证者字段非空、且不是 PR 作者本人。同一人判定做过身份归一：
+#      去括号内容、去空白、小写后取核心名，再比；并拒收以作者名开头的验证者
+#      （防「宝拉（代签）」这类后缀绕过）；三态 PASS / PASS+NOTES / FAIL 恰好勾一个，
+#      且必须是通过类结论——勾 FAIL 即判不通过（验证说不可合并就不许合并）。
 #
 # 用法：
 #   bash scripts/check_pr_review.sh --pr 47                 # 读 GitHub 上的真实 PR（gh api）
@@ -140,6 +143,33 @@ else
 fi
 
 # ---------- 校验 2：独立验证 ----------
+# 去掉成对括号（全角/半角）及其内容：只留核心名，防「宝拉（代签）」这类后缀绕过。
+# 用 bash 的 ${s%%（*} / ${s#*）} 按字面量切，不用 sed 的字符集——多字节字符进字符集会被按字节拆。
+strip_parens() {
+  local s="$1" head rest
+  while [[ $s == *"（"* ]]; do
+    head="${s%%（*}"; rest="${s#*（}"
+    if [[ $rest == *"）"* ]]; then s="${head}${rest#*）}"; else s="$head"; fi   # 括号没闭合：从「（」起砍掉
+  done
+  while [[ $s == *"("* ]]; do
+    head="${s%%(*}"; rest="${s#*(}"
+    if [[ $rest == *")"* ]]; then s="${head}${rest#*)}"; else s="$head"; fi
+  done
+  printf '%s' "$s"
+}
+
+# 身份归一：去括号内容 → 去空白（含全角空格）→ 小写
+normalize_name() {
+  local s
+  s=$(strip_parens "$1")
+  s=${s//$(printf '\u3000')/}
+  s=$(printf '%s' "$s" | tr -d '[:space:]')
+  printf '%s' "$s" | tr '[:upper:]' '[:lower:]'
+}
+
+# $1 是否以 $2 开头（$2 为空时不算）
+starts_with() { [ -n "$2" ] && [ "${1#"$2"}" != "$1" ]; }
+
 if [ ! -s "$SEC_VERIFY" ]; then
   say "FAIL  独立验证：PR 正文里没有「## 独立验证」小节"
   fails "独立验证小节缺失"
@@ -155,8 +185,17 @@ else
       fails "独立验证·验证者为空或占位符"
       ;;
     *)
-      if [ -n "$AUTHOR" ] && [ "$(printf '%s' "$verifier" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$AUTHOR" | tr '[:upper:]' '[:lower:]')" ]; then
-        say "FAIL  独立验证·验证者：$verifier 就是 PR 作者，作者自己签不算"
+      v_norm=$(normalize_name "$verifier")
+      a_norm=$(normalize_name "$AUTHOR")
+      if [ -z "$v_norm" ]; then
+        say "FAIL  独立验证·验证者：去掉括号/空白后是空的（$verifier）"
+        fails "独立验证·验证者为空或占位符"
+      elif [ -n "$a_norm" ] && { [ "$v_norm" = "$a_norm" ] || starts_with "$v_norm" "$a_norm"; }; then
+        if [ "$verifier" != "$AUTHOR" ]; then
+          say "FAIL  独立验证·验证者：$verifier 与作者 $AUTHOR 是同一个人（归一后「$v_norm」），作者自己签不算"
+        else
+          say "FAIL  独立验证·验证者：$verifier 就是 PR 作者，作者自己签不算"
+        fi
         fails "独立验证·验证者与作者相同（$verifier）"
       else
         say "PASS  独立验证·验证者：$verifier（作者 $AUTHOR，非同一人）"
@@ -164,20 +203,42 @@ else
       ;;
   esac
 
-  # 2b 三态恰好勾一个
+  # 2b 三态：恰好勾一个，且必须是「通过类」结论（PASS / PASS+NOTES）；勾 FAIL 即拦下
   STATES=$(tmp)
   awk '{ s = $0; gsub(/`/, "", s)
          if (match(s, /\[[xX]\][ \t]*(PASS\+NOTES|PASS|FAIL)/)) {
-           t = substr(s, RSTART, RLENGTH); sub(/^\[[xX]\][ \t]*/, "", t); print t } }' "$SEC_VERIFY" >"$STATES"
+           t = substr(s, RSTART, RLENGTH); sub(/^\[[xX]\][ \t]*/, "", t)
+           printf "%s\t%s\n", t, s } }' "$SEC_VERIFY" >"$STATES"
   n_state=$(grep -c . "$STATES" || true)
   if [ "${n_state:-0}" -eq 0 ]; then
     say "FAIL  独立验证·三态：PASS / PASS+NOTES / FAIL 一个都没勾"
     fails "独立验证·三态未勾选"
   elif [ "${n_state:-0}" -gt 1 ]; then
-    say "FAIL  独立验证·三态：勾了 $n_state 个（$(tr '\n' ' ' <"$STATES")），只允许一个"
+    say "FAIL  独立验证·三态：勾了 $n_state 个（$(cut -f1 "$STATES" | tr '\n' ' ')），只允许一个"
     fails "独立验证·三态勾了多个"
   else
-    say "PASS  独立验证·三态：$(cat "$STATES")"
+    state=$(cut -f1 "$STATES")
+    rawline=$(cut -f2- "$STATES")
+    case "$state" in
+      PASS|PASS+NOTES)
+        say "PASS  独立验证·三态：$state"
+        ;;
+      FAIL)
+        # 勾 FAIL 就是把「不许合并」写进正文：门禁必须跟着红，并把阻断项带出来
+        block=""
+        if [[ $rawline == *阻断项* ]]; then
+          # 多字节字符不放进 sed 的字符集（会被按字节拆成乱码），只用字面量分两次剥
+          block=$(printf '%s' "$rawline" | sed -e 's/.*阻断项：//' -e 's/.*阻断项://' \
+              -e 's/）.*$//' -e 's/).*$//' -e 's/[[:space:]]*$//')
+        fi
+        say "FAIL  独立验证·三态：FAIL —— 验证结论为 FAIL，不得合并${block:+（阻断项：$block）}"
+        fails "独立验证·结论为 FAIL，不得合并"
+        ;;
+      *)
+        say "FAIL  独立验证·三态：识别不出结论（$state）"
+        fails "独立验证·三态识别失败"
+        ;;
+    esac
   fi
 fi
 
