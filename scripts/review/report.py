@@ -187,10 +187,15 @@ def build_index() -> dict[str, list[str]]:
     return index
 
 
-def find_callers(index: dict[str, list[str]], name: str, limit: int = 25) -> tuple[list[str], int]:
-    """一层调用方：仓库内出现的该符号引用（去掉定义那一行）。"""
-    bare = name.rsplit(".", 1)[-1]
-    pat = re.compile(rf"(?<![\w$]){re.escape(bare)}(?![\w$])")
+GENERIC_NAMES = {
+    "main", "run", "git", "get", "post", "put", "delete", "init", "load", "save",
+    "open", "parse", "walk", "test", "app", "start", "stop", "read", "write", "setup",
+}
+
+
+def find_callers(index: dict[str, list[str]], bare: str, limit: int = 25) -> tuple[list[str], int]:
+    """一层调用方：只认调用形态 `name(`，避免 main/git 这类通用词把范围撑爆。"""
+    pat = re.compile(rf"(?<![\w$]){re.escape(bare)}\s*\(")
     hits: list[str] = []
     total = 0
     for path, lines in index.items():
@@ -241,7 +246,9 @@ def suggested_tests(changed: list[str], all_tests: list[str]) -> dict[str, list[
 
 
 def escalation_reasons(
-    changed: list[str], symbols: dict[str, list[tuple[str, int]]], callers: dict[str, int]
+    changed: list[str],
+    symbols: dict[str, list[tuple[str, int]]],
+    callers: list[tuple[str, str, list[str], int]],
 ) -> list[str]:
     reasons: list[str] = []
     for path in changed:
@@ -251,7 +258,7 @@ def escalation_reasons(
                 break
         if path in SHARED_MODULES:
             reasons.append(f"{path} 是{SHARED_MODULES[path]}")
-    hot = [name for name, n in callers.items() if n >= FANOUT_CALLER_THRESHOLD]
+    hot = [name for _, name, _, n in callers if n >= FANOUT_CALLER_THRESHOLD]
     if hot:
         shown = "、".join(hot[:5])
         reasons.append(f"单符号调用方 ≥ {FANOUT_CALLER_THRESHOLD}：{shown}（共 {len(hot)} 个）")
@@ -289,7 +296,7 @@ def write_report(
     branch: str,
     changed: list[str],
     symbols: dict[str, list[tuple[str, int]]],
-    callers: dict[str, tuple[list[str], int]],
+    callers: list[tuple[str, str, list[str], int]],
     tests: dict[str, list[str]],
     esc: list[str],
     added: int,
@@ -298,10 +305,12 @@ def write_report(
 ) -> str:
     rel = f"docs/review/{label}.md"
     rows = []
+    totals: dict[str, int] = {}
+    for path, _name, _hits, total in callers:
+        totals[path] = totals.get(path, 0) + total
     for path in changed:
         syms = symbols.get(path, [])
-        total = callers.get(path, ([], 0))[1]
-        rows.append(f"| `{path}` | {why_in_scope(path, syms, total, tests.get(path, []))} |")
+        rows.append(f"| `{path}` | {why_in_scope(path, syms, totals.get(path, 0), tests.get(path, []))} |")
 
     sym_rows = [
         f"| `{p}` | " + ("、".join(f"`{n}`（L{ln}）" for n, ln in syms[:10]) or "—") + " |"
@@ -309,7 +318,7 @@ def write_report(
         if syms
     ]
     caller_rows = []
-    for name, (hits, total) in callers.items():
+    for path, name, hits, total in sorted(callers, key=lambda c: -c[3]):
         if total == 0:
             continue
         shown = "、".join(f"`{h}`" for h in hits[:10])
@@ -438,7 +447,7 @@ def main() -> int:
     branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
 
     symbols: dict[str, list[tuple[str, int]]] = {}
-    callers: dict[str, tuple[list[str], int]] = {}
+    callers: list[tuple[str, str, list[str], int]] = []
     index = build_index()
     for path in changed:
         syms = symbols_of(path)
@@ -446,12 +455,15 @@ def main() -> int:
             continue
         symbols[path] = syms
         for name, _ in syms:
-            hits, total = find_callers(index, name)
-            callers[name] = (hits, total)
+            bare = name.rsplit(".", 1)[-1]
+            if bare in GENERIC_NAMES or len(bare) <= 2:
+                continue
+            hits, total = find_callers(index, bare)
+            callers.append((path, name, hits, total))
 
     all_tests = test_files()
     tests = suggested_tests(changed, all_tests)
-    esc = escalation_reasons(changed, symbols, {n: t for n, (_, t) in callers.items()})
+    esc = escalation_reasons(changed, symbols, callers)
 
     print(f"审核范围 · 基线 {args.base} ({base_sha}) · 分支 {branch}")
     print(f"改动 {len(changed)} 个文件（+{added} / -{removed}）")
@@ -464,10 +476,9 @@ def main() -> int:
         print("  无函数/类级改动")
     print()
     print("[2/4] 一层调用方")
-    hot = [(n, t) for n, (_, t) in callers.items() if t]
+    hot = [c for c in callers if c[3]]
     if hot:
-        for name, total in sorted(hot, key=lambda x: -x[1])[:12]:
-            hits, _ = callers[name]
+        for _path, name, hits, total in sorted(hot, key=lambda c: -c[3])[:12]:
             print(f"  {name} ← {total} 处（{', '.join(hits[:4])}{' …' if total > 4 else ''}）")
     else:
         print("  无仓库内引用")
