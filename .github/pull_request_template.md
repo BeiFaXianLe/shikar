@@ -33,6 +33,17 @@ $ cd backend && python -m pytest
 → … passed
 ```
 
+## 审核范围报告（review-gate）
+
+<!-- 范围不靠「怕漏就全仓扫」，靠一条命令给的数据：
+     bash scripts/review.sh --base origin/main
+     报告写到 docs/review/pr-<编号>.md；CI 的 review-gate 校验四栏填实（理由 ≥6 字、影响面 ≥40 字且写到调用方、
+     测试栏须有命令行+真实输出）、范围清单覆盖 diff（含删除的文件）、结论写 PASS / PASS+NOTES 才绿（写 FAIL 判红）。 -->
+
+- [ ] 已跑 `bash scripts/review.sh --base origin/main`，报告已随 PR 提交（`docs/review/pr-<编号>.md`）
+- [ ] 报告四栏填实：范围 / 影响面依据（含判断结论）/ 跑了哪些测试（命令+实际输出）/ 结论
+- [ ] 本地 `python scripts/review_check.py --base origin/main` 通过（CI 会再跑一遍）
+
 ## 关联
 
 - Issue：
