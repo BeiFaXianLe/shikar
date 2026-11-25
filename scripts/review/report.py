@@ -499,7 +499,7 @@ def main() -> int:
         print("  已升级为全量范围，理由：" + "；".join(esc))
         print("  cd backend && python -m pytest")
     elif suggested:
-        print("  cd backend && python -m pytest " + " ".join(os.path.basename(t) for t in suggested))
+        print("  cd backend && python -m pytest " + " ".join(f"tests/{os.path.basename(t)}" for t in suggested))
     else:
         print("  无（本次改动没有命中测试）")
     uncovered = [p for p in changed if p.endswith(".py") and not tests.get(p) and not p.startswith(("backend/tests/", "docs/"))]
