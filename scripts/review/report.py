@@ -281,6 +281,8 @@ def why_in_scope(
     caller_total: int,
     tests: list[str],
 ) -> str:
+    if re.match(r"^docs/review/pr-.*\.md$", path):
+        return "审核范围报告自身（review-gate 不把报告文件算进覆盖要求）"
     if path.startswith("docs/"):
         return "文档改动，无运行时代码路径；不需要单测"
     if path.startswith(".github/"):
