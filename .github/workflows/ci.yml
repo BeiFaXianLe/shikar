@@ -135,6 +135,41 @@ jobs:
           echo "### ⚠️ 流程门禁未通过（仅提示，不阻断合并）" >> "$GITHUB_STEP_SUMMARY"
           echo "建议用「审核范围报告 / 三段式」随手补一下；没补也不挡合并。" >> "$GITHUB_STEP_SUMMARY"
 
+  review-gate:
+    # 审核范围报告：没有报告、四栏没填实、范围清单漏了 diff 的文件，都会报出来。
+    # 与之互补的是 pr-review-gate（PR 正文三段式）——一个管「审了什么范围」，一个管「谁签的字」。
+    # 2026-11-25 起只作提示、不阻断合并（同本文件头口径）；name 未改。
+    name: review-gate（审核范围报告）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要跟目标分支算 merge-base，浅克隆不够
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 自检：门禁自己先证明「能过」也能拦（只作提示）
+        # 门禁最怕永远红；固定样本每次跑一遍：填齐要 PASS，缺栏/漏文件/瞎写结论要 FAIL。
+        continue-on-error: true
+        run: python scripts/review_check.py --self-test
+
+      - name: 校验审核范围报告（只作提示，不阻断）
+        id: range_gate
+        continue-on-error: true
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python scripts/review_check.py --base "origin/${{ github.base_ref }}"
+
+      - name: 审核范围报告结果只是提示
+        if: steps.range_gate.outcome == 'failure'
+        run: |
+          echo "::warning::审核范围报告缺失或没填实 —— 仅作提示，不阻断合并。"
+          echo "### ⚠️ 审核范围报告未通过（仅提示，不阻断合并）" >> "$GITHUB_STEP_SUMMARY"
+
   deps-audit:
     name: 依赖漏洞体检（仅定时/手动，不阻断合并）
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
