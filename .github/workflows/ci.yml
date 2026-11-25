@@ -102,17 +102,23 @@ jobs:
 
       - name: 自检：门禁自己先证明「能过」也能拦（只作提示）
         # 门禁最怕的不是拦不住，而是永远红：那会让所有 PR 永久无法合并。
-        # 所以每次都用固定样本跑一遍：填齐要 PASS、缺栏位要 FAIL。
+        # 所以每次都用固定样本跑一遍：填齐要 PASS，四种违规形态都要 FAIL（只作提示，不阻断）。
         continue-on-error: true
         run: |
           set -e
           bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-filled.md --author fixture-author
-          echo "自检 1/2 通过：填齐的正文判 PASS"
-          if bash scripts/check_pr_review.sh --body-file scripts/fixtures/pr-body-missing.md --author fixture-author; then
-            echo "::error::自检失败：缺栏位的正文竟然也判 PASS"
-            exit 1
-          fi
-          echo "自检 2/2 通过：缺栏位的正文判 FAIL（预期返回 1）"
+          echo "自检 1/4 → 填齐的正文判 PASS"
+
+          check_fail() {   # $1=样本文件名 $2=序号 + 说明
+            if bash scripts/check_pr_review.sh --body-file "scripts/fixtures/$1" --author fixture-author; then
+              echo "::error::自检失败：$2 竟然也判 PASS"
+              exit 1
+            fi
+            echo "自检 $2 → 判 FAIL（预期返回非 0）"
+          }
+          check_fail pr-body-missing.md "2/4 缺栏位"
+          check_fail pr-body-fail.md "3/4 三态勾 FAIL（验证说不可合并）"
+          check_fail pr-body-author-suffix.md "4/4 验证者写成作者名 +（代签）"
 
       - name: 校验「审核三段式」与「独立验证三态」（只作提示，不阻断）
         id: review_gate
