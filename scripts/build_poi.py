@@ -32,23 +32,40 @@ SCHOOL_QUERIES = [
     ("高中", "high", "教育培训;重点高中"),
 ]
 HOSP_TAGS = [("三甲", "医疗;三级甲等医院"), ("二甲", "医疗;二级甲等医院")]
+# 能从百度分类可靠认出的「社区」类医院；公办/民办不能从分类判断，留空不猜。
+COMMUNITY_MARKERS = ("社区卫生服务", "村卫生室", "卫生室", "医务室", "社区门诊")
+
+
+def hospital_ownership(it: dict) -> str | None:
+    """按百度 tag/type 分类判定医院性质：只判「社区」，其余返回 None。"""
+    text = " ".join(str(x) for x in (it.get("tag"), it.get("type")) if x)
+    if any(m in text for m in COMMUNITY_MARKERS):
+        return "社区"
+    return None
 
 
 def pid(uid: str) -> str:
     return "baidu:" + str(uid)
 
 
-def save_pois(conn, items, type_, subtype=None, grade_map=None, default_grade=None, city=None):
+def save_pois(conn, items, type_, subtype=None, grade_map=None, default_grade=None,
+              city=None, ownership_fn=None):
     n = 0
+    # 采集重跑时保住人工标注过的性质：本次判不出来（None）就沿用库里的旧值。
+    prev_own = {r["id"]: r["ownership"] for r in conn.execute(
+        "SELECT id,ownership FROM poi WHERE ownership IS NOT NULL")}
     for it in items:
         if not it.get("uid") or it.get("lng") is None or it.get("lat") is None:
             continue
         g = default_grade
         if grade_map is not None:
             g = grade_map.get(it["uid"], default_grade)
+        own = ownership_fn(it) if ownership_fn else None
+        if not own:
+            own = prev_own.get(pid(it["uid"]))
         storage.upsert_poi(conn, {
             "id": pid(it["uid"]), "type": type_, "subtype": subtype, "name": it["name"],
-            "city": city, "grade": g, "lat": it["lat"], "lng": it["lng"],
+            "city": city, "grade": g, "ownership": own, "lat": it["lat"], "lng": it["lng"],
             "district": it.get("district"), "address": it.get("address"),
             "source": "baidu", "version": time.strftime("%Y-%m-%d"),
         })
@@ -101,7 +118,8 @@ def main():
             for label, tag in HOSP_TAGS:
                 for u in tagged_uids("医院", d, tag, a.max_pages):
                     gmap[u] = label
-            n = save_pois(conn, items, "hospital", None, grade_map=gmap, default_grade="未知", city=cname)
+            n = save_pois(conn, items, "hospital", None, grade_map=gmap, default_grade=None,
+                          city=cname, ownership_fn=hospital_ownership)
             nh += n
             print(f"  hospital {d}: {len(items)} saved={n} 三甲={sum(1 for v in gmap.values() if v=='三甲')}", flush=True)
             time.sleep(0.2)

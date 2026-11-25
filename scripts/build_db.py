@@ -74,8 +74,17 @@ def load_poi(db):
             tables = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "poi" not in tables:
                 return [], [], {}, None
+            # 列清单必须与 restore_poi 的 cols 逐列一致；新增列要两处同步，
+            # 否则周重建会静默丢掉该列（ownership 曾因此有清空风险）。
+            # 旧库可能还没有 ownership 列（升级过渡期），用 NULL 占位保持列数与顺序稳定。
+            poi_cols = {r[1] for r in old.execute("PRAGMA table_info(poi)")}
+            select_cols = [
+                "id", "type", "subtype", "name", "city", "grade",
+                "ownership" if "ownership" in poi_cols else "NULL AS ownership",
+                "lat", "lng", "district", "address", "source", "version",
+            ]
             poi_rows = old.execute(
-                "SELECT id,type,subtype,name,city,grade,lat,lng,district,address,source,version FROM poi"
+                "SELECT %s FROM poi" % ",".join(select_cols)
             ).fetchall()
             rel_rows = []
             if "community_poi" in tables:
@@ -107,8 +116,13 @@ def restore_poi(conn, poi_rows, rel_rows, extra_rows=None):
     """
     n_poi = 0
     if poi_rows:
-        cols = "id,type,subtype,name,city,grade,lat,lng,district,address,source,version"
-        conn.executemany(f"INSERT OR REPLACE INTO poi ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", poi_rows)
+        # 与 load_poi 的列清单保持一致（新增列两处同步）。
+        cols = ("id,type,subtype,name,city,grade,ownership,"
+                "lat,lng,district,address,source,version")
+        conn.executemany(
+            f"INSERT OR REPLACE INTO poi ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            poi_rows,
+        )
         n_poi = len(poi_rows)
 
     n_rel = 0

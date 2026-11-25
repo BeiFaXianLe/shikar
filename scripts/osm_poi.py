@@ -57,8 +57,13 @@ class Extract(osmium.SimpleHandler):
                               "grade": "普通", "lat": lat, "lng": lon,
                               "district": tags.get("addr:district")})
         elif tags.get("amenity") == "hospital":
+            # 等级不臆造「未知」，由百度标签补三甲/二甲；性质只读 OSM 的 operator:type，
+            # 其余留空（覆盖不全，白捡，不当主数据源）。
+            op = (tags.get("operator:type") or "").strip().lower()
+            ownership = {"government": "公办", "private": "民办"}.get(op)
             self.pois.append({"id": f"osm:{osm_type}{oid}", "type": "hospital",
-                              "subtype": None, "name": name, "grade": "未知",
+                              "subtype": None, "name": name, "grade": None,
+                              "ownership": ownership,
                               "lat": lat, "lng": lon, "district": tags.get("addr:district")})
         elif tags.get("railway") == "station" and not is_subway(tags):
             # 只保留真正的铁路客运站（名字以“站”结尾，排除地铁/线路/轻轨等）
@@ -145,6 +150,15 @@ def main():
     #      （即确认对应）时才删除该百度 POI 及其社区关系；
     #   3) 全过程在同一事务内完成并一次提交，任何一步失败整体回滚，不会留下半删状态。
     osm_ids = {p["id"] for p in pois}
+    # 重导前先记下人工标注过的性质：下面会 DELETE 当前城市旧 OSM 行再重建，
+    # 不保留就会把 tag_poi_ownership.py 写入的值一起删掉。
+    prev_ownership = {
+        r["id"]: r["ownership"]
+        for r in conn.execute(
+            "SELECT id,ownership FROM poi WHERE city=? AND id LIKE 'osm:%' AND ownership IS NOT NULL",
+            (a.city,),
+        )
+    }
     try:
         # 1) 清当前城市旧 OSM 数据（重复导入去重）。
         conn.execute(
@@ -155,9 +169,12 @@ def main():
         conn.execute("DELETE FROM poi WHERE city=? AND id LIKE 'osm:%'", (a.city,))
         for p in pois:
             g = match_grade(p["name"])
+            row = {**p, "city": a.city, "address": None, "source": "osm", "version": "2026-11"}
             if g:
-                p = {**p, "grade": g}
-            storage.upsert_poi(conn, {**p, "city": a.city, "address": None, "source": "osm", "version": "2026-11"})
+                row["grade"] = g
+            if not row.get("ownership"):
+                row["ownership"] = prev_ownership.get(row["id"])
+            storage.upsert_poi(conn, row)
 
         # 2) 仅删除当前城市中「已确认被 OSM 对应」的百度 POI。
         osm_names = [(p["type"], p["name"].strip()) for p in pois if p.get("name")]

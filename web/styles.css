@@ -757,6 +757,10 @@ a:hover { color: var(--gold-hi); border-bottom-color: var(--gold-hi); }
 
 /* ---------- 学校/医院/高铁站 菜单 ---------- */
 .poi-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+/* 筛选维度各自占一行：标签 + 胶囊（学校阶段 / 医院等级 / 医院性质） */
+.poi-bar-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; }
+.poi-bar-label { font-size: 12.5px; color: var(--ink-faint); min-width: 2.2em; letter-spacing: 0.04em; }
+.poi-bar-row .poi-tab { font-size: 13px; padding: 4px 12px; }
 .poi-tab {
   font-family: var(--sans); border: 1px solid var(--line-strong); background: rgba(245, 239, 227, 0.04);
   color: var(--ink-soft); padding: 6px 14px; cursor: pointer; font-size: 14px; border-radius: var(--r-pill);

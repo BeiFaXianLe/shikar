@@ -9,6 +9,7 @@
 | `SNAPSHOT_LOG.md` | 每周快照留痕（日期 / 京津小区数 / 指标期数分布 / 是否限流） | 见文件 |
 | `shikar.db` | **构建产物（不随仓库提交，已加入 .gitignore）**：由上面两份 CSV 运行 `scripts/build_db.py` 生成 | 17439 小区 / 21214 指标 |
 | `subway/` | 北京/天津真实地铁线路与站点（WGS84）与导入脚本所需 GeoJSON | 见 `subway/README.md` |
+| `poi_ownership.csv` | 医院性质人工核对清单（`poi_id,name,city,grade,ownership,note`），由 `scripts/tag_poi_ownership.py` 写入 `poi.ownership`。当前仅表头，待人工核对 | — |
 
 > `data/fang_preview_all.csv`（逐周累积的历史成交样本）**不入公开仓库**，只存私有备份仓库
 > `BeiFaXianLe/shikar-data-backup`（见 `scripts/push_backup.py`）。它是不可再生数据，
