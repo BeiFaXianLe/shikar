@@ -161,7 +161,7 @@ def normalize(path: str) -> str:
     return p
 
 
-def validate(text: str, diff: list[str], report_path: str) -> list[str]:
+def validate(text: str, diff: list[str]) -> list[str]:
     fails: list[str] = []
 
     if "<待填" in text:
@@ -233,7 +233,7 @@ def run_self_test() -> int:
             continue
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        fails = validate(text, SELF_TEST_DIFF, f"docs/review/{name}")
+        fails = validate(text, SELF_TEST_DIFF)
         passed = not fails
         if passed == should_pass:
             print(f"PASS  自检 {name} → {'通过' if passed else '拦下'}（预期）")
@@ -283,7 +283,7 @@ def main() -> int:
             continue
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        fails = validate(text, diff, rel)
+        fails = validate(text, diff)
         if fails:
             print(f"FAIL  {rel}")
             for f_ in fails:

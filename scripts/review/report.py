@@ -252,7 +252,6 @@ def suggested_tests(changed: list[str], all_tests: list[str]) -> dict[str, list[
 
 def escalation_reasons(
     changed: list[str],
-    symbols: dict[str, list[tuple[str, int]]],
     callers: list[tuple[str, str, list[str], int, int]],
 ) -> list[str]:
     reasons: list[str] = []
@@ -475,7 +474,7 @@ def main() -> int:
 
     all_tests = test_files()
     tests = suggested_tests(changed, all_tests)
-    esc = escalation_reasons(changed, symbols, callers)
+    esc = escalation_reasons(changed, callers)
 
     print(f"审核范围 · 基线 {args.base} ({base_sha}) · 分支 {branch}")
     print(f"改动 {len(changed)} 个文件（+{added} / -{removed}）")
