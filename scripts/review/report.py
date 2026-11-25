@@ -9,7 +9,7 @@
     bash scripts/review.sh --run                    # 顺带跑建议测试，把输出写进报告
 
 做四件事：
-  1. 列本次 diff 的文件（A/M/R，D 不算范围）；
+  1. 列本次 diff 的文件（A/M/R/D 全算——删除的文件同样要审、要写理由）；
   2. 列改动到的函数/类（Python 用 ast，其他用正则兜底）；
   3. 列这些符号的一层调用方（仓库内检索，标 file:line）；
   4. 按同名与 import 关系推荐要跑的测试，生成 docs/review/pr-<编号或分支>.md 骨架。
@@ -279,7 +279,10 @@ def why_in_scope(
     symbols: list[tuple[str, int]],
     caller_total: int,
     tests: list[str],
+    deleted: bool = False,
 ) -> str:
+    if deleted:
+        return "删除文件：需确认仓库内无残留引用、调用方已改完；删除理由写在这里"
     if re.match(r"^docs/review/pr-.*\.md$", path):
         return "审核范围报告自身（review-gate 不把报告文件算进覆盖要求）"
     if path.startswith("docs/"):
@@ -313,15 +316,19 @@ def write_report(
     added: int,
     removed: int,
     run_output: str | None,
+    deleted: set[str] | None = None,
 ) -> str:
     rel = f"docs/review/{label}.md"
+    gone = deleted or set()
     rows = []
     totals: dict[str, int] = {}
     for path, _name, _hits, total, _external in callers:
         totals[path] = totals.get(path, 0) + total
     for path in changed:
         syms = symbols.get(path, [])
-        rows.append(f"| `{path}` | {why_in_scope(path, syms, totals.get(path, 0), tests.get(path, []))} |")
+        rows.append(
+            f"| `{path}` | {why_in_scope(path, syms, totals.get(path, 0), tests.get(path, []), path in gone)} |"
+        )
 
     sym_rows = [
         f"| `{p}` | " + ("、".join(f"`{n}`（L{ln}）" for n, ln in syms[:10]) or "—") + " |"
@@ -454,7 +461,9 @@ def main() -> int:
         sys.exit(f"找不到基线 {args.base}；先 git fetch origin main")
 
     entries, added, removed = parse_diff(args.base)
-    changed = [p for st, p in entries if st != "D"]
+    # 删除的文件也在范围里：删掉鉴权/事务代码是最危险的改法，不能静默漏过。
+    changed = [p for _st, p in entries]
+    deleted = {p for st, p in entries if st == "D"}
     branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
 
     symbols: dict[str, list[tuple[str, int]]] = {}
@@ -503,7 +512,11 @@ def main() -> int:
         print("  cd backend && python -m pytest " + " ".join(f"tests/{os.path.basename(t)}" for t in suggested))
     else:
         print("  无（本次改动没有命中测试）")
-    uncovered = [p for p in changed if p.endswith(".py") and not tests.get(p) and not p.startswith(("backend/tests/", "docs/"))]
+    uncovered = [
+        p
+        for p in changed
+        if p.endswith(".py") and not tests.get(p) and p not in deleted and not p.startswith(("backend/tests/", "docs/"))
+    ]
     if uncovered:
         print("  未覆盖：" + "、".join(uncovered))
     print()
@@ -532,6 +545,7 @@ def main() -> int:
         added=added,
         removed=removed,
         run_output=run_output,
+        deleted=deleted,
     )
     print(f"[4/4] 报告骨架 → {rel}")
     print()
