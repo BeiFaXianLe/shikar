@@ -96,6 +96,31 @@ jobs:
             --body-file "$RUNNER_TEMP/pr_body.md" \
             --author "$(cat "$RUNNER_TEMP/pr_author.txt")"
 
+  review-gate:
+    # 审核范围报告的闸门：没有报告、四栏没填实、范围清单漏了 diff 的文件，都红。
+    # 与之互补的是 pr-review-gate（PR 正文三段式）——一个管「审了什么范围」，一个管「谁签的字」。
+    name: review-gate（审核范围报告）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要跟目标分支算 merge-base，浅克隆不够
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 自检：门禁自己先证明「能过」也能拦
+        # 门禁最怕永远红；固定样本每次跑一遍：填齐要 PASS，缺栏/漏文件/瞎写结论要 FAIL。
+        run: python scripts/review_check.py --self-test
+
+      - name: 校验审核范围报告
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python scripts/review_check.py --base "origin/${{ github.base_ref }}"
+
   deps-audit:
     name: 依赖漏洞体检（仅定时/手动，不阻断合并）
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

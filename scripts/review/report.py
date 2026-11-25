@@ -411,11 +411,11 @@ def write_report(
     return rel
 
 
-def run_tests(suggested: list[str], full: bool, escalated: bool) -> str:
+def run_tests(suggested: list[str], escalated: bool) -> str:
+    if not escalated and not suggested:
+        return "本次改动没有建议测试，未跑测试（并在报告里说明为什么可以不跑）"
     cmd = [sys.executable, "-m", "pytest"]
-    if escalated or full:
-        pass
-    else:
+    if not escalated:
         cmd += [f"tests/{os.path.basename(t)}" for t in suggested]
     p = subprocess.run(
         cmd,
@@ -506,7 +506,7 @@ def main() -> int:
     run_output = None
     if args.run:
         print("跑测试…")
-        run_output = run_tests(suggested, full=True, escalated=bool(esc))
+        run_output = run_tests(suggested, escalated=bool(esc))
 
     rel = write_report(
         label=label,
