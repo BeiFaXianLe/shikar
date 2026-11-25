@@ -278,6 +278,7 @@ def main() -> int:
     for rel in reports:
         path = os.path.join(ROOT, rel)
         if not os.path.exists(path):
+            print(f"FAIL  {rel}（这个路径在 diff 里，但工作区没有这个文件）")
             all_fails.append(f"报告不存在：{rel}")
             continue
         with open(path, encoding="utf-8") as f:
