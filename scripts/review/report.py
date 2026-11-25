@@ -488,7 +488,7 @@ def main() -> int:
     print("[2/4] 一层调用方")
     hot = [c for c in callers if c[3]]
     if hot:
-        for _path, name, hits, total in sorted(hot, key=lambda c: -c[3])[:12]:
+        for _path, name, hits, total, _external in sorted(hot, key=lambda c: -c[3])[:12]:
             print(f"  {name} ← {total} 处（{', '.join(hits[:4])}{' …' if total > 4 else ''}）")
     else:
         print("  无仓库内引用")
