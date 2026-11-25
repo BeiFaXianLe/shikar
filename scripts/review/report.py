@@ -193,19 +193,24 @@ GENERIC_NAMES = {
 }
 
 
-def find_callers(index: dict[str, list[str]], bare: str, limit: int = 25) -> tuple[list[str], int]:
-    """一层调用方：只认调用形态 `name(`，避免 main/git 这类通用词把范围撑爆。"""
+def find_callers(
+    index: dict[str, list[str]], bare: str, def_path: str, limit: int = 25
+) -> tuple[list[str], int, int]:
+    """一层调用方：只认调用形态 `name(`，并按「定义文件之外的文件数」区分局部辅助函数。"""
     pat = re.compile(rf"(?<![\w$]){re.escape(bare)}\s*\(")
     hits: list[str] = []
     total = 0
+    external: set[str] = set()
     for path, lines in index.items():
         for lineno, line in enumerate(lines, 1):
             if not pat.search(line) or is_definition(line, bare):
                 continue
             total += 1
+            if path != def_path:
+                external.add(path)
             if len(hits) < limit:
                 hits.append(f"{path}:{lineno}")
-    return hits, total
+    return hits, total, len(external)
 
 
 def test_files() -> list[str]:
@@ -248,7 +253,7 @@ def suggested_tests(changed: list[str], all_tests: list[str]) -> dict[str, list[
 def escalation_reasons(
     changed: list[str],
     symbols: dict[str, list[tuple[str, int]]],
-    callers: list[tuple[str, str, list[str], int]],
+    callers: list[tuple[str, str, list[str], int, int]],
 ) -> list[str]:
     reasons: list[str] = []
     for path in changed:
@@ -258,7 +263,12 @@ def escalation_reasons(
                 break
         if path in SHARED_MODULES:
             reasons.append(f"{path} 是{SHARED_MODULES[path]}")
-    hot = [name for _, name, _, n in callers if n >= FANOUT_CALLER_THRESHOLD]
+    # 私有（_开头）或只在本文件内被调用的辅助函数不算高扇出：改它影响不到别处。
+    hot = [
+        name
+        for _, name, _, n, external in callers
+        if n >= FANOUT_CALLER_THRESHOLD and external >= 2 and not name.rsplit(".", 1)[-1].startswith("_")
+    ]
     if hot:
         shown = "、".join(hot[:5])
         reasons.append(f"单符号调用方 ≥ {FANOUT_CALLER_THRESHOLD}：{shown}（共 {len(hot)} 个）")
@@ -296,7 +306,7 @@ def write_report(
     branch: str,
     changed: list[str],
     symbols: dict[str, list[tuple[str, int]]],
-    callers: list[tuple[str, str, list[str], int]],
+    callers: list[tuple[str, str, list[str], int, int]],
     tests: dict[str, list[str]],
     esc: list[str],
     added: int,
@@ -306,7 +316,7 @@ def write_report(
     rel = f"docs/review/{label}.md"
     rows = []
     totals: dict[str, int] = {}
-    for path, _name, _hits, total in callers:
+    for path, _name, _hits, total, _external in callers:
         totals[path] = totals.get(path, 0) + total
     for path in changed:
         syms = symbols.get(path, [])
@@ -318,7 +328,7 @@ def write_report(
         if syms
     ]
     caller_rows = []
-    for path, name, hits, total in sorted(callers, key=lambda c: -c[3]):
+    for path, name, hits, total, _external in sorted(callers, key=lambda c: -c[3]):
         if total == 0:
             continue
         shown = "、".join(f"`{h}`" for h in hits[:10])
@@ -447,7 +457,7 @@ def main() -> int:
     branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
 
     symbols: dict[str, list[tuple[str, int]]] = {}
-    callers: list[tuple[str, str, list[str], int]] = []
+    callers: list[tuple[str, str, list[str], int, int]] = []
     index = build_index()
     for path in changed:
         syms = symbols_of(path)
@@ -458,8 +468,8 @@ def main() -> int:
             bare = name.rsplit(".", 1)[-1]
             if bare in GENERIC_NAMES or len(bare) <= 2:
                 continue
-            hits, total = find_callers(index, bare)
-            callers.append((path, name, hits, total))
+            hits, total, external = find_callers(index, bare, path)
+            callers.append((path, name, hits, total, external))
 
     all_tests = test_files()
     tests = suggested_tests(changed, all_tests)
